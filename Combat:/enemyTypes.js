@@ -195,7 +195,10 @@
     { type: 'wolf',     count: 6, biome: 'pineForest', zone: { cx: 0,   cz: -60, r: 90 } },
     { type: 'skeleton', count: 4, biome: 'barrows',    zone: { cx: 60,  cz: -70, r: 55 } },
     { type: 'bandit',   count: 3, biome: 'road',       zone: { cx: -50, cz: 20,  r: 70 } },
-    { type: 'troll',    count: 1, biome: 'fellmoor',   zone: { cx: 110, cz: -110, r: 60 } }
+    /* [build-03 integrator patch] old zone {cx:110, cz:-110, r:60} was centered
+     * on the exact corner of the 220x220 terrain mesh — the troll spawned off
+     * the map (playtest bug #1). Moved in-bounds; still the remote NE corner. */
+    { type: 'troll',    count: 1, biome: 'fellmoor',   zone: { cx: 80,  cz: -80, r: 24 } }
   ];
 
   EF.data.enemyTypes = {

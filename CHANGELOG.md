@@ -1,5 +1,70 @@
 # EMBERFELL — CHANGELOG
 
+## build-03 (playtest fixes) — 2026-07-09, Integrator/QA
+
+**Deliverables:** `build-03.html` (clean), `build-03-diag.html` (overlay +
+FPS badge + hp/stamina line), `index.html` (= clean build). Responds to the
+build-02 phone playtest.
+
+### Playtest item 1 — enemies floating / spawning off-map: FIXED
+
+**Root cause was NOT the flat-terrain stub.** `enemies.js`'s `groundAt`
+fallback chain was already correct — it prefers `EF.world.terrainH` for both
+spawn placement and per-frame ground height, and World's sampler was active
+at spawn time (World subscribes to `game:booted` before Combat in load
+order). The actual bug: **`terrainH` is analytic** — it happily returns
+heights for any (x,z) — but the visual terrain mesh only spans 220×220
+(edges at ±110). Three spawn zones poked past the mesh (wolf to z=−150,
+skeleton to z=−125, bandit to x=−120) and the troll zone was centered on the
+exact map corner (110,−110), reaching (170,−170). Enemies out there stood on
+invisible analytic ground — including the +20 m mountain ridge — reading as
+"floating, off-map."
+
+Fixes (marked `[build-03 integrator patch]` in source):
+- `enemies.js`: spawn candidates outside the mesh (±size/2 − 4 m margin,
+  read from `EF.worldData` with a safe fallback) are rejected; the fallback
+  spawn is the zone center clamped onto the mesh. Per-frame AI movement
+  (chase/lunge/knockback/wander) is clamped to the same bound — no
+  per-frame allocation, plain comparisons.
+- `enemyTypes.js`: troll zone moved in-bounds, `{cx:80, cz:−80, r:24}` —
+  still the remote NE corner.
+- `player.js`: the hardcoded ±200 position clamp had the same latent bug
+  (mesh ends at ±110); now clamps to the mesh extent from `EF.worldData`.
+
+Verified headless: all 14 enemies on-mesh, `root.position.y` equal to
+`terrainH(x,z)` to within 0.01, zero off-mesh after spawn and while ticking.
+
+### Playtest item 2 — scene membership & fog distance: CONFIRMED
+
+All 14 spawned enemies have `root.parent === EF.engine.scene`. Distances at
+spawn: 4 of 14 within the 60 m fog-far (wolves/bandits near the village
+ring); the rest sit 63–119 m out in their remote zones — **fog-hidden at
+spawn is expected behavior**, they appear as you approach. The
+away-from-player spawn rule (>32 m) guarantees none pop in point-blank.
+
+### Playtest item 3 — temporary diagnostic controls: ADDED
+
+New integrator module `diag-controls.js` ships in BOTH build-03 flavors
+(marked TEMPORARY — delete when UI delivers in Cycle 3):
+- **ATK** / **JMP** touch circles bottom-right, **RESPAWN** pill bottom
+  center. All three bound via `EF.engine.input.bindButton`, so Attack and
+  Jump flow through the exact `wasPressed()` edges combat.js and player.js
+  already poll, and every press emits the canonical `input:button` event.
+  Respawn polls its own button edge on `game:tick` and calls
+  `EF.combat.respawn()` → `player.respawnAt()` → `player:spawned`.
+- Contract-clean: cssText only (§2.2), no private rAF, no per-frame
+  allocation; pressed-state feedback rides the `input:button` event.
+
+Verified headless via real DOM taps: JMP → airborne; ATK → swing state
+machine ran and a wolf took damage (40→35); kill → movement locked while
+dead → RESPAWN tap → alive at village spawn, hp/st restored to full.
+Zero console errors; self-test 26/26 PASS.
+
+Note: draw-call budget unchanged from build-02 (max 84 observed this run —
+V-1/CR-5 against enemy mesh counts still open with Combat dept).
+
+---
+
 ## build-02 (Cycle 2 integration) — 2026-07-09, Integrator/QA
 
 **Deliverables:** `build-02.html` (clean), `build-02-diag.html` (error overlay +

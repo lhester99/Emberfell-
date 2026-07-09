@@ -40,6 +40,18 @@
   var pool = [];          // all enemy handles (fixed size, recycled)
   var idCounter = 0;
 
+  /* [build-03 integrator patch, playtest bug #1] terrainH is ANALYTIC: it
+   * returns heights for any (x,z), but the visual terrain mesh only spans
+   * EF.worldData.terrain.size (±110). Spawn zones that poke past the mesh
+   * edge put enemies on invisible ground — "floating, off-map". All spawn
+   * candidates and per-frame AI movement are now clamped to the mesh. */
+  var EDGE_MARGIN = 4;
+  var HALF = 100; // refreshed from world data at boot; safe fallback
+  function refreshWorldBounds() {
+    var wd = EF.worldData;
+    if (wd && wd.terrain && wd.terrain.size) HALF = wd.terrain.size * 0.5 - EDGE_MARGIN;
+  }
+
   /* -------------------------------------------------- hp bar builder ---- */
   function makeHpBar(width) {
     var g = new THREE.Group();
@@ -65,10 +77,16 @@
       var rad = Math.sqrt(Math.random()) * zone.r;
       var x = zone.cx + Math.cos(ang) * rad;
       var z = zone.cz + Math.sin(ang) * rad;
+      /* [build-03] reject candidates off the terrain mesh */
+      if (x < -HALF || x > HALF || z < -HALF || z > HALF) continue;
       var dpx = x - px, dpz = z - pz;
       if (!awayFromPlayer || (dpx * dpx + dpz * dpz) > 32 * 32) return { x: x, z: z };
     }
-    return { x: zone.cx, z: zone.cz };
+    /* [build-03] fallback: zone center clamped onto the mesh */
+    return {
+      x: Math.max(-HALF, Math.min(HALF, zone.cx)),
+      z: Math.max(-HALF, Math.min(HALF, zone.cz))
+    };
   }
 
   /* biome gate: if world exposes biomeAt, prefer a matching spot; else use the
@@ -328,6 +346,10 @@
         moveMag = doWander(e, dt);
       }
 
+      // [build-03] keep AI movement (chase/lunge/knockback/wander) on the mesh
+      if (e.x < -HALF) e.x = -HALF; else if (e.x > HALF) e.x = HALF;
+      if (e.z < -HALF) e.z = -HALF; else if (e.z > HALF) e.z = HALF;
+
       // commit transform
       e.root.position.set(e.x, groundAt(e.x, e.z), e.z);
       e.root.rotation.y = e.yaw;
@@ -347,6 +369,7 @@
   /* --------------------------------------------------- boot the pool ---- */
   bus.on('game:booted', function (bp) {
     if (bp && bp.__selfTest) return;
+    refreshWorldBounds(); // [build-03] before any spawn math
     var roster = EF.data.enemyTypes.roster;
     for (var r = 0; r < roster.length; r++) {
       var entry = roster[r];
