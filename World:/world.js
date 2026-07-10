@@ -42,7 +42,7 @@
 
   /* Registering EF.world before window 'load' keeps the engine's
    * standalone harness from booting (engine.js checks !EF.world). */
-  var world = { pois: [], ready: false, time01: 0.35 };
+  var world = { pois: [], ready: false, time01: 0.35, occluders: [] };
   EF.world = world;
 
   /* ===================== 1. NOISE + HEIGHT FIELD ===================== */
@@ -155,6 +155,19 @@
       var sn = smoothstep(T.snowHeight, T.snowHeight + 2.5, h) *
                (1 - smoothstep(0.95, 1.35, s));                          // snow caps
       tmp.lerp(cSnow, sn);
+
+      /* subtle elevation + local-relief shading: hollows darker, ridges
+       * lighter, so the ground reads as landform instead of flat green.
+       * relief = center minus mean of neighbors (concavity); elevF = absolute
+       * height band. Both kept gentle and clamped. */
+      var e2 = 0.9;
+      var hMean = (terrainH(x - e2, z) + terrainH(x + e2, z) +
+                   terrainH(x, z - e2) + terrainH(x, z + e2)) * 0.25;
+      var relief = h - hMean;                 // >0 bumps/ridges, <0 hollows
+      var elevF = clamp01((h + 3) / 18);      // ~0 low ground .. 1 high ground
+      var bright = 1 + (elevF - 0.5) * 0.16 + relief * 0.5;
+      if (bright < 0.82) bright = 0.82; else if (bright > 1.12) bright = 1.12;
+      tmp.multiplyScalar(bright);
 
       colors[i * 3] = tmp.r; colors[i * 3 + 1] = tmp.g; colors[i * 3 + 2] = tmp.b;
     }
@@ -291,6 +304,16 @@
     pushGeom(acc, GEO.cyl, COL.stone, mat(x, y + 6.2, z, 5.5, 0.3, 5.5, 0));   // band
     pushGeom(acc, GEO.cone, COL.slate, mat(x, y + 10.2, z, 6.6, 2.4, 6.6, 0));
     pushGeom(acc, GEO.box, COL.sealed, mat(x, y + 1.05, z + 2.55, 1.25, 2.1, 0.28, 0)); // the seal
+
+    /* weathered boulders slumped around the base (atmosphere) */
+    var boulders = [[5.0, -1.4, 2.0, 1.5], [-3.4, 4.2, 2.5, 1.8],
+                    [1.6, -5.2, 1.7, 1.1], [-4.8, -2.6, 2.1, 1.3], [3.8, 4.4, 1.5, 1.0]];
+    for (var bi = 0; bi < boulders.length; bi++) {
+      var bx = x + boulders[bi][0], bz = z + boulders[bi][1];
+      var bw = boulders[bi][2], bh = boulders[bi][3];
+      pushGeom(acc, GEO.ico, COL.stoneDark,
+        mat(bx, terrainH(bx, bz) + bh * 0.32, bz, bw, bh, bw * 0.9, bi * 1.27, 0.14, 0.1));
+    }
   }
 
   function buildStones(acc, rng) {
@@ -340,15 +363,18 @@
     var out = {};
     var acc;
 
-    acc = beginMerge();  // pine: trunk + two canopy cones
-    pushGeom(acc, GEO.cyl, COL.wood, mat(0, 0.55, 0, 0.5, 1.1, 0.5, 0));
-    pushGeom(acc, GEO.cone, 0x2f5d3a, mat(0, 1.85, 0, 2.6, 2.2, 2.6, 0));
-    pushGeom(acc, GEO.cone, 0x386842, mat(0, 3.15, 0, 1.8, 1.7, 1.8, 0.5));
+    /* Cycle 2 polish: trunks lengthened ~1.5-2x so the canopy sits above the
+     * close third-person camera sightline (~1.4-2.5 m eye band). Same tri
+     * count / draw calls; only matrices at merge time changed. */
+    acc = beginMerge();  // pine: taller trunk, two canopy cones lifted clear
+    pushGeom(acc, GEO.cyl, COL.wood, mat(0, 1.3, 0, 0.5, 2.6, 0.5, 0));    // trunk 0..2.6
+    pushGeom(acc, GEO.cone, 0x2f5d3a, mat(0, 3.6, 0, 2.6, 3.0, 2.6, 0));   // canopy 2.1..5.1
+    pushGeom(acc, GEO.cone, 0x386842, mat(0, 5.6, 0, 1.7, 2.2, 1.7, 0.5)); // cap 4.5..6.7
     out.pine = endMerge(acc, 'pine').geometry;
 
-    acc = beginMerge();  // birch: pale trunk + ellipsoid canopy
-    pushGeom(acc, GEO.cyl, 0xdfe0d6, mat(0, 1.0, 0, 0.32, 2.0, 0.32, 0));
-    pushGeom(acc, GEO.ico, 0x86a84e, mat(0, 2.6, 0, 1.25, 1.5, 1.25, 0.4));
+    acc = beginMerge();  // birch: pale trunk raised, ellipsoid canopy lifted
+    pushGeom(acc, GEO.cyl, 0xdfe0d6, mat(0, 1.7, 0, 0.32, 3.4, 0.32, 0));   // trunk 0..3.4
+    pushGeom(acc, GEO.ico, 0x86a84e, mat(0, 4.3, 0, 1.35, 1.7, 1.35, 0.4)); // canopy 3.45..5.15
     out.birch = endMerge(acc, 'birch').geometry;
 
     acc = beginMerge();  // rock: white-baked, tinted per instance
@@ -450,6 +476,7 @@
       mesh.frustumCulled = false;  // instances span the world; skip bad sphere cull
       mesh.name = 'ef-scatter-' + kind;
       scene.add(mesh);
+      if (kind !== 'tuft') world.occluders.push(mesh); // solid scenery only; grass shouldn't zoom the camera
       drawCalls++;
     }
     console.log('[EF.world] scatter: ' +
@@ -722,6 +749,67 @@
     }
   }
 
+  /* ===================== 8b. CAMERA OCCLUSION ========================= */
+  /* When solid scenery sits between player and camera, pull the rig's
+   * distance in so we look past it instead of clipping through. game:tick
+   * fires BEFORE cameraRig.update in the engine loop, so the reduced
+   * distance lands the same frame -- no engine.js edit; we use the rig's
+   * public setDistance() only.
+   *
+   * Seam: the engine's wheel handler writes rig.distance directly, so we
+   * track the user's intended distance separately and detect a wheel change
+   * by comparing against what we last wrote. (Phones have no wheel, so this
+   * only matters on desktop.) A rig-native version -- CR-W2 -- would drop
+   * this bookkeeping, but the world-side version needs no engine fork. */
+  var camRay = new THREE.Raycaster();
+  var _occTarget = new THREE.Vector3();
+  var _occDir = new THREE.Vector3();
+  var occDesired = -1, occApplied = -1, occCurrent = -1, occFrame = 0, occHit = Infinity;
+  var OCC_BUFFER = 0.35, OCC_EVERY = 3;
+
+  function updateCameraOcclusion(dt) {
+    var rig = EF.engine.camera;
+    if (!playerObj || world.occluders.length === 0) return;
+    if (occDesired < 0) { occDesired = occCurrent = occApplied = rig.distance; }
+
+    /* a wheel zoom mutates rig.distance out from under us -> adopt it */
+    if (Math.abs(rig.distance - occApplied) > 1e-4) occDesired = rig.distance;
+
+    var head = rig.headOffset != null ? rig.headOffset : 1.4;
+    _occTarget.set(playerObj.position.x, playerObj.position.y + head, playerObj.position.z);
+
+    /* throttle the raycast; reuse last hit between casts, lerp every frame */
+    if ((occFrame++ % OCC_EVERY) === 0) {
+      var cp = Math.cos(rig.pitch), sp = Math.sin(rig.pitch);
+      _occDir.set(
+        occDesired * cp * Math.sin(rig.yaw),
+        occDesired * sp,
+        occDesired * cp * Math.cos(rig.yaw)
+      );
+      var full = _occDir.length();
+      if (full > 1e-3) {
+        _occDir.multiplyScalar(1 / full);
+        camRay.set(_occTarget, _occDir);
+        camRay.far = full;
+        var hits = camRay.intersectObjects(world.occluders, false);
+        occHit = hits.length ? hits[0].distance : Infinity;
+      } else {
+        occHit = Infinity;
+      }
+    }
+
+    var target = (occHit < occDesired) ? Math.max(rig.minDistance, occHit - OCC_BUFFER)
+                                       : occDesired;
+    /* snap in fast to avoid a frame of clip; ease back out gently */
+    var rate = (target < occCurrent) ? 20 : 6;
+    occCurrent += (target - occCurrent) * (1 - Math.exp(-rate * dt));
+    if (occCurrent < rig.minDistance) occCurrent = rig.minDistance;
+    if (occCurrent > rig.maxDistance) occCurrent = rig.maxDistance;
+
+    rig.setDistance(occCurrent);
+    occApplied = rig.distance;
+  }
+
   /* ===================== 9. BOOT + TICK ================================ */
 
   EF.bus.on('game:booted', function (p) {
@@ -743,6 +831,7 @@
     buildArch(acc, rng);
     var poiMesh = endMerge(acc, 'ef-pois');
     scene.add(poiMesh);
+    world.occluders.push(poiMesh);
 
     buildWater(scene);
     buildFlame(scene);
@@ -758,5 +847,6 @@
     updateSky(t.dt);
     updateWaterFire(t.elapsed);
     updatePickups(t.elapsed);
+    updateCameraOcclusion(t.dt);
   });
 })();

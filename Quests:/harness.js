@@ -249,6 +249,32 @@ ok(Q2.getState('maren.wolves')==='active' && Q2.progress('maren.wolves')===0,'re
 
 function lastOf(l,ev){ for(let i=l.length-1;i>=0;i--) if(l[i].ev===ev) return l[i].payload; return null; }
 
+/* journal logs completed quests */
+console.log('\n== journal ==');
+ok(EF.quests.journal.length===6,'journal has 6 completed-quest entries');
+ok(EF.quests.journal[0].title==='Wolves at the Gate','first journal entry is the wolf quest');
+ok(EF.quests.getJournal().length===6 && EF.quests.getJournal()!==EF.quests.journal,'getJournal returns a copy');
+ok(log.some(e=>e.ev==='journal:entry'&&e.payload.id==='maren.seal'),'journal:entry emitted for the finale');
+
+/* ambient gossip near an NPC */
+console.log('\n== ambient gossip ==');
+phase='day';
+const corin=EF.npcs.get('corin');
+moveTo(corin.group.position.x, corin.group.position.z);
+let ambientFired=false;
+bus.on('dialogue:ambient',p=>{ if(p&&p.npc==='corin'&&/iron|tower|swept/.test(p.text)) ambientFired=true; });
+for(let i=0;i<800 && !ambientFired;i++) tick(0.05);
+ok(ambientFired,'Corin mutters an ambient gossip line when the player is in earshot');
+
+/* idle head-glance + weight shift */
+console.log('\n== idle animation ==');
+const gt=EF.npcs.get('gethin');
+moveTo(gt.group.position.x+2.5, gt.group.position.z+2.5); // stand nearby (within notice)
+let maxHead=0, maxLean=0;
+for(let i=0;i<500;i++){ tick(0.05); maxHead=Math.max(maxHead,Math.abs(gt.parts.head.rotation.y)); maxLean=Math.max(maxLean,Math.abs(gt.parts.torso.rotation.z)); }
+ok(maxHead>0.05,'head turns toward a nearby player (glance)');
+ok(maxLean>0.01,'weight-shift lean animates the torso');
+
 /* night behaviour: NPCs seek the fire and sit */
 console.log('\n== night: NPCs sit by the fire ==');
 phase='night';

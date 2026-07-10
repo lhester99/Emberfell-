@@ -30,6 +30,10 @@
       /* ---- MAREN - village elder by the fire. Dry, unsurprised. ------- */
       maren: {
         name: 'Maren',
+        ambient: [
+          'The fire wants another log before dark. It always does.',
+          'My knees know the weather before the sky lets on.'
+        ],
         branches: [
           { quest: 'maren.wolves', state: 'ready',     node: 'wolves_turnin' },
           { quest: 'maren.watch',  state: 'ready',     node: 'watch_turnin' },
@@ -103,6 +107,10 @@
       /* ---- ODDA - herbalist by the well. Brisk, practical. ------------ */
       odda: {
         name: 'Odda',
+        ambient: [
+          'Wet cough season. I can hear half this street from here.',
+          'Mind the mud. I will not say it twice - I will, but mind it.'
+        ],
         branches: [
           { quest: 'odda.herbs', state: 'ready',     node: 'herbs_turnin' },
           { quest: 'odda.herbs', state: 'active',    node: 'herbs_active' },
@@ -140,6 +148,10 @@
       /* ---- GETHIN - old watchman. Terse, uneasy. ---------------------- */
       gethin: {
         name: 'Gethin',
+        ambient: [
+          'Thirty years on this gate and it still creaks on the third push.',
+          'Quiet again. I never did learn to trust the quiet.'
+        ],
         branches: [
           { quest: 'gethin.stones', state: 'ready',     node: 'stones_turnin' },
           { quest: 'gethin.stones', state: 'active',    node: 'stones_active' },
@@ -177,6 +189,10 @@
       /* ---- TALIA - a traveler resting at the ruined arch. ------------- */
       talia: {
         name: 'Talia',
+        ambient: [
+          'Strange, resting somewhere with no name to put to it.',
+          'The road west is longer than any map is honest about.'
+        ],
         branches: [
           { quest: 'talia.delivery', state: 'active',    node: 'delivery_active' },
           { quest: 'talia.delivery', state: 'offerable', node: 'delivery_offer' },
@@ -209,6 +225,11 @@
       /* ---- CORIN - pure flavour. Loiters by the well, all tongue. ----- */
       corin: {
         name: 'Corin',
+        ambient: [
+          'That well water has tasted of iron since the frost. Nobody will say why.',
+          'Saw a light up at the tower last night. Told Gethin. He told me to sleep more.',
+          'Odda swept her step three times this morning. Three. Something is on that woman.'
+        ],
         branches: [],
         fallback: 'greet',
         nodes: {

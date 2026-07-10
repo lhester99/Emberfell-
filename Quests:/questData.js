@@ -74,7 +74,11 @@
         blurb: 'Gather glowing marsh-herbs from the Stillmere shore.',
         objectives: [
           { type: 'collect', item: 'herb', count: 3, desc: 'Gather glowing herbs',
-            spawn: { poi: 'lake', scatter: 6.5, n: 3 } }
+            /* Stillmere is a WATER-filled POI (biomes drop:-2.4, water plane
+             * on top). Scattering inside the radius drops herbs UNDER the water
+             * where the player cannot walk. ringMin/ringMax are multipliers of
+             * the POI radius, so herbs sit on the shore just past the water. */
+            spawn: { poi: 'lake', n: 3, ringMin: 1.2, ringMax: 1.5 } }
         ],
         marker: { active: 'lake', turnin: 'village' },
         reward: { gold: 60, xp: 80 }

@@ -120,8 +120,22 @@
     parts.legL = leg(-0.22);
     parts.legR = leg(0.22);
 
-    // weapon mount at the right hand
-    attach = pivot(0, -0.86, 0.02);
+    // weapon mount at the right hand/wrist.
+    // Weapon models are built grip-at-origin with the blade along local +Y
+    // (data/weapons.js). At the wrist the arm's own +Y points back up toward the
+    // shoulder, so a mount with no offset/rotation drives the blade straight up
+    // THROUGH the forearm. Two corrections seat it in the fist and make it
+    // protrude:
+    //   1) HAND_FORWARD pushes the mount forward along the hand's local +Z so
+    //      the grip clears the arm volume and sits at the front of the fist;
+    //   2) the tilt rotates the blade's +Y so it points forward-and-down out of
+    //      the fist rather than up the arm.
+    // Both are constants so the pose can be tuned without touching weapon models.
+    var HAND_FORWARD = 0.22;          // metres along hand local +Z into the fist
+    var HAND_DROP = -0.84;            // y at the fist
+    var HAND_TILT = Math.PI * 0.55;   // blade +Y -> points forward (slightly down)
+    attach = pivot(0, HAND_DROP, HAND_FORWARD);
+    attach.rotation.x = HAND_TILT;
     parts.armR.add(attach);
     parts.attach = attach;
 

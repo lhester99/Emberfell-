@@ -12,7 +12,13 @@
  * Contract v1.1 compliance:
  *   SS4 - emits dialogue:open / dialogue:close and listens for dialogue:choice
  *         (pre-approved SS4 additions); also emits quest:offered when an offer
- *         node opens, and audio:play. Ignores __selfTest payloads.
+ *         node opens, dialogue:ambient for idle barks, and audio:play. Ignores
+ *         __selfTest payloads.
+ *
+ * Idle animation: subtle weight shift (foot-to-foot lean), a breathing bob, and
+ * an occasional head turn toward the player when nearby (clamped, eased - not a
+ * stiff full-body snap). NPCs also mutter ambient lines from dialogue.ambient
+ * when the player is within earshot.
  *   SS5 - no private rAF loop; all motion runs off 'game:tick'. Models are
  *         built on 'game:booted'.
  *   SS2 - ASCII quotes; console.log/warn/error only; POI-anchored placement -
@@ -129,11 +135,13 @@
     g.add(mesh(GEO.torso, mCloth, 0, 1.16, 0));
     g.add(mesh(new THREE.BoxGeometry(0.54, 0.10, 0.32), mTrim, 0, 0.86, 0)); // belt
 
-    // head + hair cap + face dab
-    var head = mesh(GEO.head, mSkin, 0, 1.66, 0);
-    g.add(head);
-    g.add(mesh(GEO.cap, mHair, 0, 1.80, 0));                 // hair
-    g.add(mesh(new THREE.BoxGeometry(0.30, 0.10, 0.04), 0 ? mSkin : lam(0x2a2018), 0, 1.62, 0.16)); // brow shadow
+    // head + hair cap + face dab, all on a neck pivot so the head turns as one
+    var headPivot = pivot(0, 1.66, 0);
+    var head = mesh(GEO.head, mSkin, 0, 0, 0);
+    headPivot.add(head);
+    headPivot.add(mesh(GEO.cap, mHair, 0, 0.14, 0));                        // hair
+    headPivot.add(mesh(new THREE.BoxGeometry(0.30, 0.10, 0.04), lam(0x2a2018), 0, -0.04, 0.16)); // brow shadow
+    g.add(headPivot);
 
     // arms (shoulders ~1.5), hang -Y so a pivot at the shoulder swings them
     var armL = pivot(-0.34, 1.50, 0), armR = pivot(0.34, 1.50, 0);
@@ -179,7 +187,7 @@
       }
     }
 
-    return { group: g, parts: { legL: legL, legR: legR, armL: armL, armR: armR, torso: g.children[0], head: head } };
+    return { group: g, parts: { legL: legL, legR: legR, armL: armL, armR: armR, torso: g.children[0], head: headPivot } };
   }
 
   /* ===================================================================== *
@@ -212,7 +220,14 @@
       home: { x: hx, z: hz }, seat: seat, leash: d.leash,
       wander: { x: hx, z: hz }, waitT: 1 + Math.random() * 2,
       moving: false, sitting: false, swayPhase: Math.random() * 6.28,
-      legAmt: 0, yaw: grp.rotation.y, talking: false
+      legAmt: 0, yaw: grp.rotation.y, talking: false,
+      // idle animation state
+      shiftPhase: Math.random() * 6.28,   // weight-shift oscillator
+      headYaw: 0,                          // current eased head turn (local)
+      glanceHold: 0,                       // seconds left in a head-glance
+      glanceCd: 1 + Math.random() * 4,     // seconds until the next glance
+      // ambient chatter
+      ambientCd: 4 + Math.random() * 10
     };
   }
 
@@ -256,23 +271,27 @@
 
     var pdist2 = Infinity;
     if (pos) { var ax = pos.x - n.group.position.x, az = pos.z - n.group.position.z; pdist2 = ax * ax + az * az; }
+    var near = pos && pdist2 < NOTICE * NOTICE;
+
+    updateAmbient(n, dt, pos);
 
     if (n.talking && pos) {
-      // frozen mid-conversation: face the player, no wander
+      // frozen mid-conversation: face the player squarely, head centred
       faceToward(n, pos.x, pos.z);
       n.moving = false;
+      updateHeadGlance(n, dt, pos, false);
       animateLimbs(n, dt, elapsed, false);
       return;
     }
 
     if (night && n.seat) {
-      // head to the fire and sit
+      // head to the fire and sit; still glance up when the player is near
       var atSeat = stepToward(n, n.seat.x, n.seat.z, dt);
       if (atSeat) {
         if (!n.sitting) { n.sitting = true; sitPose(n, true); }
-        // face roughly inward toward the flame
         faceToward(n, poiById('village').x, poiById('village').z);
       }
+      updateHeadGlance(n, dt, pos, near && !!atSeat);
       animateLimbs(n, dt, elapsed, n.moving);
       return;
     }
@@ -280,15 +299,16 @@
     // daytime (or seat-less NPC at night): stand up if we were sitting
     if (n.sitting && !night) { n.sitting = false; sitPose(n, false); }
 
-    if (pos && pdist2 < NOTICE * NOTICE) {
-      // notice the player: turn to them, pause the stroll
-      faceToward(n, pos.x, pos.z);
+    if (near) {
+      // player nearby: stop the stroll, stay in a relaxed idle, and let the
+      // HEAD occasionally turn toward them (not a stiff full-body snap).
       n.moving = false;
+      updateHeadGlance(n, dt, pos, true);
       animateLimbs(n, dt, elapsed, false);
       return;
     }
 
-    // wander within the leash of home
+    // wander within the leash of home; head eases back to centre
     n.waitT -= dt;
     var tx = n.wander.x, tz = n.wander.z;
     var done = stepToward(n, tx, tz, dt);
@@ -301,20 +321,68 @@
         n.waitT = 1.5 + Math.random() * 3.5;
       }
     }
+    updateHeadGlance(n, dt, pos, false);
     animateLimbs(n, dt, elapsed, n.moving);
+  }
+
+  /* Occasional head turn toward the player. While 'near', a glance fires every
+   * few seconds and holds briefly; otherwise the head eases back to centre.
+   * Head yaw is clamped so nobody cranes their neck past a natural look. */
+  function updateHeadGlance(n, dt, pos, near) {
+    if (near && pos) {
+      if (n.glanceHold > 0) { n.glanceHold -= dt; }
+      else {
+        n.glanceCd -= dt;
+        if (n.glanceCd <= 0) { n.glanceHold = 0.9 + Math.random() * 1.6; n.glanceCd = 3 + Math.random() * 5; }
+      }
+    } else {
+      n.glanceHold = 0;
+    }
+    var target = 0;
+    if (n.glanceHold > 0 && pos) {
+      var want = Math.atan2(pos.x - n.group.position.x, pos.z - n.group.position.z);
+      var local = want - n.yaw;
+      while (local > Math.PI) local -= Math.PI * 2;
+      while (local < -Math.PI) local += Math.PI * 2;
+      if (local > 0.7) local = 0.7; else if (local < -0.7) local = -0.7;
+      target = local;
+    }
+    n.headYaw += (target - n.headYaw) * Math.min(1, dt * 5);
+    n.parts.head.rotation.y = n.headYaw;
+  }
+
+  /* Ambient chatter: when the player is within earshot, an NPC occasionally
+   * mutters a line from its dialogue.ambient pool. Emitted as dialogue:ambient
+   * (a UI bark hook); never fires over an open dialogue modal. */
+  var HEAR = 7.0;
+  function updateAmbient(n, dt, pos) {
+    var tree = EF.dialogue.npc[n.id];
+    if (!tree || !tree.ambient || !tree.ambient.length || _open || !pos) return;
+    var dx = pos.x - n.group.position.x, dz = pos.z - n.group.position.z;
+    if (dx * dx + dz * dz > HEAR * HEAR) return;
+    n.ambientCd -= dt;
+    if (n.ambientCd > 0) return;
+    var line = tree.ambient[(Math.random() * tree.ambient.length) | 0];
+    bus.emit('dialogue:ambient', { npc: n.id, speaker: tree.name, text: line });
+    n.ambientCd = 9 + Math.random() * 10;
   }
 
   function animateLimbs(n, dt, elapsed, moving) {
     // ease leg-swing amplitude toward moving state
     var target = moving ? 1 : 0;
     n.legAmt += (target - n.legAmt) * Math.min(1, dt * 8);
-    if (n.sitting) return; // sit pose owns the legs
+    if (n.sitting) return; // sit pose owns the body
     n.swayPhase += dt * (moving ? 8 : 2.2);
     var s = Math.sin(n.swayPhase) * (0.5 * n.legAmt + 0.03);
     n.parts.legL.rotation.x = s;
     n.parts.legR.rotation.x = -s;
     n.parts.armL.rotation.x = -s * 0.7;
     n.parts.armR.rotation.x = s * 0.7;
+    // subtle weight shift foot-to-foot (fades out while walking)
+    n.shiftPhase += dt * 0.6;
+    var wob = Math.sin(n.shiftPhase) * (1 - n.legAmt * 0.7);
+    n.parts.torso.rotation.z = wob * 0.05;
+    n.parts.torso.position.x = wob * 0.03;
     // gentle breathing bob
     n.parts.torso.position.y = 1.16 + Math.sin(elapsed * 1.6 + n.swayPhase * 0.1) * 0.012;
   }
@@ -323,6 +391,7 @@
     if (on) {
       n.parts.legL.rotation.x = 1.25; n.parts.legR.rotation.x = 1.25;
       n.parts.armL.rotation.x = 0.4; n.parts.armR.rotation.x = 0.4;
+      n.parts.torso.rotation.z = 0; n.parts.torso.position.x = 0;
       n.group.position.y = groundAt(n.group.position.x, n.group.position.z) - 0.32;
     } else {
       n.parts.legL.rotation.x = 0; n.parts.legR.rotation.x = 0;

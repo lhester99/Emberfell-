@@ -97,6 +97,7 @@
       '@keyframes efRise{0%{opacity:1;transform:translate(-50%,0) scale(1)}100%{opacity:0;transform:translate(-50%,-64px) scale(1.05)}}',
       '@keyframes efBanner{0%{opacity:0;transform:translate(-50%,10px)}12%{opacity:1;transform:translate(-50%,0)}80%{opacity:1}100%{opacity:0;transform:translate(-50%,-8px)}}',
       '@keyframes efFlash{0%{opacity:.42}100%{opacity:0}}',
+      '@keyframes efPop{0%{transform:scale(1)}35%{transform:scale(1.3)}100%{transform:scale(1)}}',
       '.ef-btn:active{background:rgba(243,233,200,.34)!important;transform:translateY(1px)}',
       '.ef-chip:active{filter:brightness(.86)}',
       '.ef-row:last-child{border-bottom:none!important}',
@@ -118,11 +119,12 @@
 
   function bar(w,h,fillA,fillB){
     var b = el('div','width:'+w+'px;height:'+h+'px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.32);border-radius:'+(h/2)+'px;margin-bottom:5px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.6);');
-    var f = el('div','height:100%;width:100%;border-radius:'+(h/2)+'px;transition:width .14s ease-out;background:linear-gradient('+fillA+','+fillB+');');
+    var f = el('div','height:100%;width:0%;border-radius:'+(h/2)+'px;background:linear-gradient('+fillA+','+fillB+');');
     b.appendChild(f); return { box:b, fill:f };
   }
   var hud = el('div','position:fixed;top:calc(10px + '+SA+'top));left:12px;pointer-events:none;text-shadow:0 1px 3px #000;');
   var hpB = bar(154,14,T.hp,T.hpDk), stB = bar(124,10,T.st,T.stDk), xpB = bar(124,7,T.xp,T.xpDk);
+  hpB._disp=hpB._tgt=0; stB._disp=stB._tgt=0; xpB._disp=xpB._tgt=0; // JS-lerped widths
   var statLine = el('div','color:'+T.ink+';font-size:13px;margin-top:2px;line-height:1.5;');
   statLine.innerHTML = 'Lv <b id="ef-lv">1</b> &nbsp;·&nbsp; <span style="color:'+T.gold+'">◆</span> <b id="ef-gold">0</b>';
   var wpnChip = el('div','display:inline-flex;align-items:center;gap:5px;margin-top:5px;padding:3px 9px;border:1px solid '+T.brassDk+';border-radius:5px;background:linear-gradient(#2a2114,#1a1408);color:'+T.ink+';font-size:12px;');
@@ -298,8 +300,7 @@
     return { wrap:wrap, name:name, text:text, btns:btns };
   })();
   function openDialogue(p){
-    /* [build-05 integrator patch] npcs.js emits `speaker`; accept both */
-    dlg.name.textContent = p.name||p.speaker||''; dlg.text.textContent = p.text||'';
+    dlg.name.textContent = p.name||p.speaker||''; /* [build-05 patch re-applied] */ dlg.text.textContent = p.text||'';
     dlg.btns.innerHTML='';
     (p.choices||[{label:'Close',id:'close'}]).forEach(function(c){
       var b = el('div','min-height:52px;padding:0 18px;display:flex;align-items:center;justify-content:center;'
@@ -321,23 +322,55 @@
   function doFlash(amt){ flash.style.animation='none'; void flash.offsetWidth;
     flash.style.setProperty('--a', amt); flash.style.animation='efFlash .45s ease-out';
   }
+  // low-HP vignette — constant reminder; pulses red below 25% (driven per-frame)
+  var vig = el('div','position:fixed;inset:0;pointer-events:none;z-index:13;opacity:0;'
+    + 'background:radial-gradient(ellipse at 50% 50%,rgba(200,20,15,0) 40%,rgba(170,12,10,.5) 76%,rgba(120,6,6,.82) 100%);');
+  root.appendChild(vig); var vigA = 0;
+  // brief scale pop for counters/bars on gain
+  function pop(elm){ if(!elm) return; elm.style.animation='none'; void elm.offsetWidth; elm.style.animation='efPop .34s ease-out'; }
   function popup(text, color){
     var p = el('div','position:fixed;left:'+(50 + (Math.random()*10-5))+'%;top:38%;transform:translate(-50%,0);'
       + 'z-index:14;pointer-events:none;font-family:'+T.serif+';font-weight:bold;font-size:19px;'
       + 'color:'+(color||'#dfe7ff')+';text-shadow:0 1px 4px #000;animation:efRise 1.2s ease-out forwards;', text);
     root.appendChild(p); setTimeout(function(){ p.remove(); }, 1200);
   }
+  // world(x,y,z) -> screen px. Prefers an engine-provided projector (harness /
+  // future rig CR); falls back to THREE camera.project against the real engine;
+  // else screen-centre. Keeps ui.js render-mode agnostic.
+  function project(x,y,z){
+    var cam = eng && eng.camera;
+    if (cam && typeof cam.project === 'function'){ var r = cam.project(x, y||0, z); if (r) return r; }
+    if (window.THREE && cam && cam.object && cam.object.isCamera){
+      var v = new THREE.Vector3(x, y||0, z); v.project(cam.object);
+      return { x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight, vis:v.z<1 };
+    }
+    return { x:innerWidth/2, y:innerHeight*0.4, vis:true };
+  }
+  // floating damage number anchored above the struck enemy
+  function dmgNumber(amount, x, z, y, crit){
+    var s = (x!=null && z!=null) ? project(x, y, z) : { x:innerWidth/2, y:innerHeight*0.4, vis:true };
+    if (s.vis === false) return;                 // behind camera — skip
+    var top = (y==null) ? s.y - 34 : s.y;        // lift above sprite when no head-height given
+    var d = el('div','position:fixed;left:'+s.x+'px;top:'+top+'px;transform:translate(-50%,0);z-index:14;'
+      + 'pointer-events:none;font-family:'+T.serif+';font-weight:bold;font-size:'+(crit?24:18)+'px;'
+      + 'color:'+(crit?T.gold:'#fff')+';text-shadow:0 1px 4px #000,0 0 6px rgba(0,0,0,.55);'
+      + 'animation:efRise 1.1s ease-out forwards;', (crit?'✸':'')+amount);
+    root.appendChild(d); setTimeout(function(){ d.remove(); }, 1100);
+  }
   var bannerEl = el('div','position:fixed;left:50%;top:22%;transform:translate(-50%,0);z-index:17;pointer-events:none;'
     + 'text-align:center;font-family:'+T.serif+';display:none;');
   root.appendChild(bannerEl);
-  function banner(text, kind){
+  var bannerT = null;
+  function banner(text, kind, ms){
+    ms = ms || 2200;                             // quest banners pass 3000 (auto-dismiss @3s)
     bannerEl.innerHTML='';
     var sub = kind==='levelup'?'LEVEL UP':kind==='complete'?'QUEST COMPLETE':kind==='accept'?'QUEST':kind==='death'?'':'';
     if (sub) bannerEl.appendChild(el('div','color:'+(kind==='death'?T.bad:T.gold)+';font-size:13px;letter-spacing:4px;margin-bottom:4px;',sub));
     bannerEl.appendChild(el('div','color:'+T.ink+';font-size:26px;letter-spacing:1px;text-shadow:0 2px 10px rgba(0,0,0,.7);',text));
     bannerEl.style.display='block'; bannerEl.style.animation='none'; void bannerEl.offsetWidth;
-    bannerEl.style.animation='efBanner 2.2s ease-out forwards';
-    setTimeout(function(){ bannerEl.style.display='none'; }, 2200);
+    bannerEl.style.animation='efBanner '+(ms/1000)+'s ease-out forwards';
+    if (bannerT) clearTimeout(bannerT);
+    bannerT = setTimeout(function(){ bannerEl.style.display='none'; bannerT=null; }, ms);
   }
   var toastEl = el('div','position:fixed;left:50%;top:calc(70px + '+SA+'top));transform:translateX(-50%);z-index:17;'
     + 'pointer-events:none;display:none;font-family:'+T.serif+';color:'+T.ink+';font-size:14px;'
@@ -349,12 +382,8 @@
   /* =======================================================================
    * 7. TITLE / DEATH / RESPAWN  (overlays own the mode while shown)
    * ===================================================================== */
-  /* [build-05 integrator patch] overlays must OUTRANK the map panel (z18,
-   * body-level). As children of root (z10) their z20 was trapped in root's
-   * stacking context and the death screen rendered UNDER an open map,
-   * making "Rise Again" unreachable. Body-level + z30 fixes the ordering. */
   function overlay(bg){ var o = el('div','position:fixed;inset:0;z-index:30;display:none;flex-direction:column;'
-    + 'align-items:center;justify-content:center;text-align:center;pointer-events:auto;font-family:'+T.serif+';background:'+bg+';'); document.body.appendChild(o); return o; }
+    + 'align-items:center;justify-content:center;text-align:center;pointer-events:auto;font-family:'+T.serif+';background:'+bg+';'); document.body.appendChild(o); return o; } /* [build-05 integrator patch, RE-APPLIED build-06: overlays must outrank the body-level map (z18)] */
   function bigBtn(label){ var b = el('div','min-height:60px;padding:16px 40px;display:flex;align-items:center;justify-content:center;'
     + 'font-size:18px;letter-spacing:1px;color:#1a1408;border-radius:8px;font-family:'+T.serif+';'
     + 'background:linear-gradient(#f0dfa8,#c9a84f);border:1px solid '+T.brassDk+';box-shadow:0 4px 12px rgba(0,0,0,.5);', label);
@@ -384,7 +413,8 @@
   bus.on('player:damaged', function(p){ if (!p||p.__selfTest) return; var a=p.amount||1;
     doFlash(Math.min(.5,.18+a*.02)); popup('-'+a, T.hp); markDirty(); });
   bus.on('combat:damage', function(p){ if (!p||p.__selfTest) return;   // §4 candidate: enemy hit numbers
-    popup((p.crit?'✸':'')+'-'+(p.amount||0), p.crit?T.gold:'#ffffff'); });
+    // Combat sends {id, amount, x, z, y?, crit?}; number floats above the enemy.
+    dmgNumber(p.amount||0, p.x, p.z, p.y, p.crit); });
   bus.on('loot:collected', function(p){ if (!p||p.__selfTest) return;
     var it=p.item||'item', n=p.count||1;
     if (it==='gold'){ popup('+'+n+' gold', T.gold); sfx('ui.coin'); }
@@ -393,10 +423,10 @@
   bus.on('player:levelup', function(p){ if (!p||p.__selfTest) return;
     banner('Level '+(p.level||P().lvl), 'levelup'); sfx('ui.levelup'); markDirty(); });
   bus.on('quest:started', function(p){ if (!p||p.__selfTest) return;
-    banner((p.name||'New quest'), 'accept'); sfx('ui.quest'); markDirty(); if (qP.wrap.style.display==='flex') renderQuests(); });
+    banner((p.name||'New quest'), 'accept', 3000); sfx('ui.quest'); markDirty(); if (qP.wrap.style.display==='flex') renderQuests(); });
   bus.on('quest:updated', function(p){ if (!p||p.__selfTest) return; markDirty(); if (qP.wrap.style.display==='flex') renderQuests(); });
   bus.on('quest:completed', function(p){ if (!p||p.__selfTest) return;
-    banner((p.name||'Quest complete'), 'complete'); sfx('ui.quest'); markDirty(); if (qP.wrap.style.display==='flex') renderQuests(); });
+    banner((p.name||'Quest complete'), 'complete', 3000); sfx('ui.quest'); markDirty(); if (qP.wrap.style.display==='flex') renderQuests(); });
   bus.on('player:died', function(p){ if (!p||p.__selfTest) return;
     deathScreen.style.display='flex'; setMode('menu'); sfx('ui.death'); });
   bus.on('player:spawned', function(p){ if (!p||p.__selfTest) return;
@@ -413,15 +443,21 @@
   var dirty = true, acc = 0, HUD_HZ = 8;
   function markDirty(){ dirty = true; }
   var lvEl, goldEl, wpnEl;
-  function grab(){ lvEl=document.getElementById('ef-lv'); goldEl=document.getElementById('ef-gold'); wpnEl=document.getElementById('ef-wpn'); }
+  function grab(){ lvEl=document.getElementById('ef-lv'); goldEl=document.getElementById('ef-gold'); wpnEl=document.getElementById('ef-wpn');
+    if (goldEl) goldEl.style.display='inline-block'; if (lvEl) lvEl.style.display='inline-block'; } // inline-block so scale-pop applies
   grab();
   function pct(v,m){ return Math.max(0,Math.min(100,(v/(m||1))*100)); }
+  var goldDisp=0, goldTgt=0, goldReady=false, xpSeen=0; // rolling gold counter + xp-gain detect
   function refreshHUD(){
     var pl = P(), s = S();
-    hpB.fill.style.width = pct(pl.hp,pl.maxhp)+'%';
-    stB.fill.style.width = pct(pl.st,pl.maxst||100)+'%';
-    xpB.fill.style.width = pct(pl.xp,pl.xpNext)+'%';
-    if (lvEl) lvEl.textContent = pl.lvl; if (goldEl) goldEl.textContent = pl.gold||0;
+    hpB._tgt = pct(pl.hp,pl.maxhp);
+    stB._tgt = pct(pl.st,pl.maxst||100);
+    var xpT = pct(pl.xp,pl.xpNext);
+    if (xpT > xpSeen + 0.5) pop(xpB.fill);       // brief pulse on XP gain
+    xpB._tgt = xpT; xpSeen = xpT;
+    goldTgt = pl.gold||0;                         // rolled toward in animate()
+    if (!goldReady){ goldDisp = goldTgt; goldReady = true; }
+    if (lvEl) lvEl.textContent = pl.lvl;
     var eqName = (s.inventory||[]).filter(function(i){return i.id===s.equipped;})[0];
     if (wpnEl) wpnEl.textContent = (eqName&&eqName.name) || pl.weapon || '—';
     // tracked quest line
@@ -436,10 +472,37 @@
     if (it.available){ bInteract.style.display='flex'; bInteract.textContent = it.label||'Interact'; }
     else bInteract.style.display='none';
   }
+  // per-FRAME smoothing (unthrottled): bar lerp, gold roll, low-HP vignette
+  var elapsed = 0;
+  function lerpTo(o, key, dt, rate){ o[key] += (o._tgt - o[key]) * Math.min(1, dt*rate); }
+  function animate(dt){
+    elapsed += dt;
+    // bars ease toward target width
+    lerpTo(hpB,'_disp',dt,12); lerpTo(stB,'_disp',dt,14); lerpTo(xpB,'_disp',dt,10);
+    hpB.fill.style.width = hpB._disp.toFixed(1)+'%';
+    stB.fill.style.width = stB._disp.toFixed(1)+'%';
+    xpB.fill.style.width = xpB._disp.toFixed(1)+'%';
+    // gold counter rolls up on pickup, with a pop when it climbs
+    if (Math.abs(goldTgt - goldDisp) > 0.5){
+      var climbing = goldTgt > goldDisp;
+      goldDisp += (goldTgt - goldDisp) * Math.min(1, dt*10);
+      if (Math.abs(goldTgt - goldDisp) < 0.5) goldDisp = goldTgt;
+      if (goldEl){ goldEl.textContent = Math.round(goldDisp); if (climbing) pop(goldEl); }
+    } else if (goldEl && +goldEl.textContent !== Math.round(goldTgt)){
+      goldEl.textContent = Math.round(goldTgt);
+    }
+    // low-HP vignette: pulse red under 25% HP, ease out otherwise
+    var pl = P(), r = pl.maxhp>0 ? pl.hp/pl.maxhp : 1, tgt = 0;
+    if (pl.hp>0 && r<0.25){ var pulse = 0.5+0.5*Math.sin(elapsed*5.2); tgt = 0.26 + pulse*0.34; }
+    vigA += (tgt - vigA) * Math.min(1, dt*8);
+    vig.style.opacity = vigA.toFixed(3);
+  }
   bus.on('game:tick', function(t){
-    acc += (t && t.dt) || 0.016;
+    var dt = (t && t.dt) || 0.016;
+    acc += dt;
     if (dirty || acc >= 1/HUD_HZ){ acc = 0; refreshHUD(); }
     refreshInteract();
+    animate(dt);
   });
 
   /* =======================================================================

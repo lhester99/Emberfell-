@@ -11,8 +11,8 @@
  * Contract v1.1 compliance:
  *   SS4 - listens to canonical events only: enemy:died, loot:collected,
  *         game:tick. Emits quest:started / quest:updated / quest:completed,
- *         ui:toast, audio:play, and map:setMarker (pre-approved SS4 addition).
- *         Every handler ignores __selfTest payloads.
+ *         ui:toast, audio:play, map:setMarker (pre-approved SS4 addition) and
+ *         journal:entry (UI log hook). Every handler ignores __selfTest.
  *   SS2 - ASCII quotes; console.log/warn/error only; no per-frame allocation
  *         in the tick path (goto scan is throttled and allocation-free).
  *
@@ -40,6 +40,7 @@
  *   activeList()               [id,...] of accepted-but-not-done quests.
  *   progress(id)               0..1 overall objective fraction.
  *   objectiveText(id)          array of HUD lines with have/need.
+ *   journal / getJournal()     append-only log of completed quests.
  * ========================================================================= */
 (function () {
   'use strict';
@@ -63,9 +64,13 @@
 
   var api = {
     flags: Object.create(null),
-    tracked: null
+    tracked: null,
+    journal: []       // append-only log of completed quests (see finalize)
   };
   EF.quests = api;
+
+  /* Returns a shallow copy of the completed-quest journal, newest last. */
+  api.getJournal = function () { return api.journal.slice(); };
 
   /* ---------------------------------------------------------------- utils */
 
@@ -258,6 +263,17 @@
     bus.emit('ui:toast', { text: 'Complete: ' + q.title + (bits.length ? ' - ' + bits.join(', ') : '') });
     bus.emit('audio:play', { sfx: 'quest' });
 
+    // journal: record the finished quest so a log panel can list achievements.
+    var entry = {
+      order: api.journal.length + 1,
+      id: id, title: q.title, blurb: q.blurb || '',
+      giver: q.giver,
+      reward: bits.join(', '),
+      at: (EF.engine && EF.engine.time) ? EF.engine.time.elapsed : 0
+    };
+    api.journal.push(entry);
+    bus.emit('journal:entry', entry);
+
     retrackAfter(id);
   }
 
@@ -273,6 +289,69 @@
 
   /* ------------------------------------------------------------- pickups */
 
+  /* Run fn now if the world can spawn, else once the world is ready. Prevents
+   * a collect quest accepted a frame early from silently spawning nothing. */
+  function whenSpawnable(fn) {
+    if (EF.world && typeof EF.world.spawnPickup === 'function' && EF.world.ready) { fn(); return; }
+    var off = bus.on('game:tick', function () {
+      if (EF.world && typeof EF.world.spawnPickup === 'function' && EF.world.ready) { off(); fn(); }
+    });
+  }
+
+  function terrainH(x, z) {
+    return (EF.world && typeof EF.world.terrainH === 'function') ? EF.world.terrainH(x, z)
+                                                                 : EF.engine.groundAt(x, z);
+  }
+  function slopeAt(x, z) {
+    var e = 0.7;
+    var hx = (terrainH(x + e, z) - terrainH(x - e, z)) / (2 * e);
+    var hz = (terrainH(x, z + e) - terrainH(x, z - e)) / (2 * e);
+    return Math.sqrt(hx * hx + hz * hz);
+  }
+  /* Water-surface elevation for a POI if biomes marks it as water, else -inf.
+   * poi.y is the (lowered) plateau/bed; the plane sits `water` above it. */
+  function waterSurfaceY(poiId, poi) {
+    var wd = EF.worldData;
+    if (wd && wd.pois) {
+      for (var i = 0; i < wd.pois.length; i++) {
+        if (wd.pois[i].id === poiId && wd.pois[i].water != null) return poi.y + wd.pois[i].water;
+      }
+    }
+    return -Infinity;
+  }
+
+  /* Pick a spawn point in one angular sector on the shore ring, terrain-aware:
+   * reject points at/under the water surface, prefer dry + flat ground. This is
+   * what keeps herbs out of the Stillmere puddles the playtest snagged on. */
+  function pickShorePoint(poi, sp, poiId, sector, n) {
+    var rad = poi.radius || 6;
+    var rMin = (sp.ringMin != null ? sp.ringMin : 1.2) * rad;
+    var rMax = (sp.ringMax != null ? sp.ringMax : 1.5) * rad;
+    var wy = waterSurfaceY(poiId, poi);
+    var a0 = (sector / n) * Math.PI * 2, a1 = ((sector + 1) / n) * Math.PI * 2;
+    var best = null, bestScore = -Infinity, fallback = null, fbH = -Infinity;
+    for (var t = 0; t < 10; t++) {
+      var a = a0 + Math.random() * (a1 - a0);
+      var d = rMin + Math.random() * (rMax - rMin);
+      var x = poi.x + Math.cos(a) * d, z = poi.z + Math.sin(a) * d;
+      var h = terrainH(x, z);
+      if (h > fbH) { fbH = h; fallback = { x: x, z: z }; } // highest = driest fallback
+      var dry = (wy === -Infinity) ? 1 : (h - wy);
+      if (dry < 0.3) continue;                            // submerged / waterline: skip
+      var score = dry - slopeAt(x, z) * 2.0;              // dry and flat wins
+      if (score > bestScore) { bestScore = score; best = { x: x, z: z }; }
+    }
+    return best || fallback || { x: poi.x + Math.cos((a0 + a1) / 2) * rMax,
+                                 z: poi.z + Math.sin((a0 + a1) / 2) * rMax };
+  }
+
+  function scatterPoint(poi, sp, k, n) {
+    var rad = poi.radius || 6, scatter = sp.scatter || 5;
+    var a = (k / n) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI / n);
+    var d = scatter * (0.55 + Math.random() * 0.45);
+    return { x: poi.x + Math.cos(a) * d, z: poi.z + Math.sin(a) * d };
+  }
+
   function spawnCollectPickups(q, rec) {
     for (var i = 0; i < q.objectives.length; i++) {
       var o = q.objectives[i];
@@ -280,20 +359,22 @@
       var sp = o.spawn;
       var poi = poiById(sp.poi);
       if (!poi) { console.warn('[EF.quests] collect spawn: no poi "' + sp.poi + '"'); continue; }
-      if (!EF.world || typeof EF.world.spawnPickup !== 'function' || !EF.world.ready) {
-        console.warn('[EF.quests] world not ready to spawn "' + o.item + '"; objective still counts drops');
-        continue;
-      }
       var n = sp.n || o.count;
-      var scatter = sp.scatter || 5;
-      for (var k = 0; k < n; k++) {
-        var a = (k / n) * Math.PI * 2 + Math.random() * 0.8;
-        var d = scatter * (0.55 + Math.random() * 0.45);
-        var x = poi.x + Math.cos(a) * d;
-        var z = poi.z + Math.sin(a) * d;
-        var h = EF.world.spawnPickup(o.item, x, z);
-        if (h) rec.pickups.push(h);
-      }
+      var ring = (sp.ringMin != null || sp.ringMax != null);
+
+      // capture everything so a deferred spawn is correct even with multiple
+      // collect objectives, and verifies the record is still active.
+      (function (objSpawn, count, useRing, poiRef, poiId, itemId, questId, forRec) {
+        whenSpawnable(function () {
+          if (records[questId] !== forRec || forRec.status === 'done') return;
+          for (var k = 0; k < count; k++) {
+            var pt = useRing ? pickShorePoint(poiRef, objSpawn, poiId, k, count)
+                             : scatterPoint(poiRef, objSpawn, k, count);
+            var h = EF.world.spawnPickup(itemId, pt.x, pt.z);
+            if (h) forRec.pickups.push(h);
+          }
+        });
+      })(sp, n, ring, poi, sp.poi, o.item, q.id, rec);
     }
   }
 

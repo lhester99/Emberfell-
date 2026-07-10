@@ -113,6 +113,14 @@
           { mesh: 'pine', count: 24, minScale: 0.6, maxScale: 1.0,
             maxSlope: 0.8, minH: 8, maxH: 20, tint: 0xdfe7e4, jitter: 0.1 }
         ]
+      },
+      {
+        id: 'tower_ruins',                 // scattered rubble ringing the sealed tower
+        region: { kind: 'ring', x: 32, z: -24, rMin: 9, rMax: 22 },
+        scatter: [
+          { mesh: 'rock', count: 34, minScale: 0.5, maxScale: 2.0,
+            maxSlope: 1.5, minH: -4, maxH: 16, tint: 0x70727a, jitter: 0.22 }
+        ]
       }
     ],
 

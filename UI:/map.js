@@ -27,10 +27,8 @@
             serif:"Georgia,'Iowan Old Style',serif" };
 
   /* ---- data queries with fallbacks ------------------------------------- */
-  /* [build-05 integrator patch] terrain.size is the FULL extent (world spans
-   * +/- size/2, Contract s1 rev A); this function returns the HALF-extent used
-   * by w2c/buildRelief as -S..+S. Unpatched, the chart mapped 4x the world
-   * and everything bunched in the middle quarter. */
+  /* [build-05 integrator patch, RE-APPLIED build-06 -- dropped by Cycle 4
+   * re-upload] terrain.size is the FULL extent; return the HALF-extent. */
   function worldSize(){
     var s = EF.worldData && EF.worldData.terrain && EF.worldData.terrain.size;
     return (typeof s === 'number' && s > 0) ? s / 2 : 100;
@@ -51,9 +49,8 @@
     tower:{ g:'♜', c:'#8892a2' }, dungeon:{ g:'☗', c:'#9a5a5a' }, fire:{ g:'✷', c:'#e07a3a' },
     shrine:{ g:'✚', c:'#7ea0c0' }, _def:{ g:'•', c:'#b08a4a' }
   };
-  /* [build-05 integrator patch] EF.world.pois carry {id,label} (Contract s1
-   * rev A), not {type,name}; fall back so pins get glyphs + captions. */
   function poiStyle(t){ return POI_STYLE[t] || POI_STYLE._def; }
+  /* [build-05 integrator patch, RE-APPLIED build-06] world pois carry {id,label} */
   function poiType(p){ return p.type || p.id; }
   function poiName(p){ return p.name || p.label; }
 
@@ -288,10 +285,8 @@
   /* =======================================================================
    * 7. shared DOM helpers (self-contained; no dependency on ui.js internals)
    * ===================================================================== */
-  /* [build-05 integrator patch] call sites pass (tag, css, TEXT) -- title
-   * 'MAP' and the close glyph -- but this helper dropped the third arg,
-   * leaving the close button an empty, invisible box (map unclosable on
-   * the phone: the frame covers the backdrop at 402px width). */
+  /* [build-05 integrator patch, RE-APPLIED build-06] call sites pass a third
+   * TEXT arg (MAP title, close glyph); dropping it left the map unclosable. */
   function el(tag, css, txt){ var e = document.createElement(tag); if (css) e.style.cssText = css; if (txt != null) e.textContent = txt; return e; }
   function tapEl(e, fn){
     e.addEventListener('touchstart', function(ev){ ev.preventDefault(); ev.stopPropagation(); fn(ev); }, { passive:false });
