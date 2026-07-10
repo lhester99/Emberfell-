@@ -90,10 +90,18 @@ Read `EF.worldData.terrain.size` at runtime (this is exactly what the
 build-03 patches in enemies.js/player.js do), and place POI markers from
 `EF.world.pois` — `[{id, label, x, z, y, radius}]` — which is
 bounds-correct by construction and already carries the resolved plateau
-height `y` for marker anchoring. Proposed for the Cycle 3 contract
-amendment alongside AR-1/AR-2: ratify `EF.worldData.terrain.size` (or an
-explicit `EF.world.bounds`) as public surface, since three departments now
-depend on it.
+height `y` for marker anchoring.
+
+**RATIFIED 2026-07-10 as Contract §1 addendum revised [v1.1 rev A]** (see
+`engine/emberfell-contract-v1.1.md`): world bounds are not a fixed number —
+query `EF.worldData.terrain.size` at runtime; POI anchoring uses
+`EF.world.pois`; no department places anything in world space against a
+literal bound. Compliance sweep at ratification: enemies.js and player.js
+query the runtime value (their literal fallbacks apply only to
+module-standalone harnesses without World, per the addendum's carve-out);
+no other module places world-space content against a literal bound.
+AR-1 (`combat:damage` event) and AR-2 (EF.data/worldData registry) remain
+open with Engine Core.
 
 ---
 

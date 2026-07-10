@@ -3,6 +3,18 @@
 
 ---
 
+## §1 addendum revised — World bounds & POI anchoring [v1.1 rev A, Cycle 3]
+
+World bounds are NOT a fixed number — query `EF.worldData.terrain.size` at
+runtime (playable extent is `size × size` centered on origin; the mesh edge
+is `±size/2`). POI anchoring uses the `EF.world.pois` array
+`{id, label, x, z, y, radius}`, which carries pre-resolved plateau height
+`y`. **All departments placing anything in world space use these, never a
+literal bound.** Hardcoded fallbacks are permitted ONLY for
+module-standalone test harnesses where World is not loaded, and must be
+commented as such (reference implementation: the `[build-03 integrator
+patch]` blocks in enemies.js and player.js).
+
 ## §2 addendum — Deployment environment [v1.1]
 
 Builds run inside the Claude artifact sandbox (an `about:srcdoc` iframe). Verified constraints every module MUST respect:
