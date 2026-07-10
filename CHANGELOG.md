@@ -1,5 +1,122 @@
 # EMBERFELL — CHANGELOG
 
+## Build history (Integrator/QA ledger)
+
+| Build | Cycle | Date | Summary |
+|-------|-------|------|---------|
+| build-01 | 1 | pre-repo | Engine Core standalone smoke build (engine.js v1.0/v1.1 harness; predates this repo's integration history — not in git) |
+| build-02 | 2 | 2026-07-09 | First integration: engine + World + Combat, Quests/NPCs/UI stubbed. Zero errors; draw budget FAIL (87/60 → CR-5) |
+| build-03 | 2.5 | 2026-07-09 | Playtest fixes: off-mesh spawn clamps (analytic terrainH vs mesh edge), troll zone, player bound; temporary ATK/JMP/RESPAWN controls |
+| build-04 | 3 | 2026-07-10 | Quests & NPCs integrated (6 quests, 5 NPCs); Combat CR-5 enemy batching (16 fixed calls, CR-5 closed); UI missing → temp UI shim; CR-6 (NPC meshes 99/60) + CR-7 (rewards uncredited) filed |
+| build-05 | 3 | 2026-07-10 | UI/UX integrated (HUD, panels, dialogue, map+minimap, death/title); EF.state adapter glue; 5 UI bugs patched (map unclosable, 4× map scale, death-under-map, payload/field mismatches) |
+| build-06 | 4 | 2026-07-10 | Polish integration + herb-pickup fix verified by dept test (4/4); setPlayerObject seam glued (pickups + camera occlusion were dead in all prior builds); damage-number anchoring payload patched; CR-6 re-escalated (fix not delivered) |
+
+### Change requests (CR) — status
+
+| ID | Owner | Status | Summary |
+|----|-------|--------|---------|
+| CR-1 | Engine | ✅ closed (v1.1) | Standalone harness explicit-only |
+| CR-2 | Engine | ✅ closed (v1.1) | Zero per-frame allocations on engine paths |
+| CR-4 | Engine | ✅ closed (v1.1) | Console polyfill first statements |
+| CR-5 | Combat | ✅ closed (build-04) | Enemy pool → InstancedMesh batches (16 fixed calls; reference implementation for CR-6) |
+| CR-W2 | World→Engine | 📋 open (advisory) | Rig-native camera occlusion would drop world.js's wheel-tracking bookkeeping |
+| CR-6 | Quests/NPCs + Combat | ⛔ OPEN — **Cycle 5 blocker, re-escalated build-06** | Draw budget: 5 NPC humanoids = 67 meshes, player rig = 21 → village night fire 99/60. Claimed fixed in Cycle 4; **no fix present in delivered code** (enemies.js/combat.js byte-identical to Cycle 3, npcs.js has no batching). Apply the CR-5 merge/instancing pattern |
+| CR-7 | Quests + Combat | ⛔ open | Quest rewards announced, never credited (no module reads `questData[id].reward` on quest:completed; Combat is the stats authority — `gainXp` already public) |
+| CR-8 | Combat | ⛔ open (glued by integrator) | `EF.world.setPlayerObject` never called from the spawn path ("Combat: call this" since Cycle 2) — pickup collection and Cycle 4 camera occlusion were dead in every integrated build until adapter glue in build-06 |
+
+### Amendment requests (AR) — status
+
+| ID | Status | Summary |
+|----|--------|---------|
+| §1 rev A | ✅ ratified 2026-07-10 | Runtime world bounds (`EF.worldData.terrain.size`) + POI anchoring via `EF.world.pois`; no literal bounds |
+| AR-1 | ⛔ open | Canonicalize `combat:damage` (warns once per boot; UI consumes it for damage numbers) |
+| AR-2 | ⛔ open | EF key registry: ratify `EF.data`, `EF.worldData`, `EF.questData`, `EF.dialogue`, `EF.state` |
+| AR-3 | ⛔ open | Enrich `quest:*` payloads with `title` (UI banners show generic fallbacks) |
+| AR-4 | ⛔ open | `EF.state` ownership → Player dept (currently integrator adapter glue) |
+| AR-5 | ⛔ open | Canonicalize/repoint UI ask-side events: `ui:menu`, `ui:start`, `ui:track`, `player:respawn` + Cycle 4 additions `journal:entry`, `dialogue:ambient` |
+| AR-6 | ⛔ open (new, build-06) | Ratify ONE `combat:damage` payload shape — combat ships `position:{x,y,z}`, UI assumed flat `{x,z,y}`; integrator patch accepts both |
+
+
+## build-06 (Cycle 4 polish + bug fixes) — 2026-07-10, Integrator/QA
+
+**Deliverables:** `build-06.html`, `build-06-diag.html`, `index.html` (=
+clean). Cycle 4 polish merged from all delivering departments; **herb-pickup
+test ran first and passed** per task priority.
+
+### Task 1 — tests/herb-pickup (`Test:/pickup_repro.js`): PASS 4/4
+
+Run against the REAL world.js pickup path with real terrainH: 3 herbs spawn
+on the new `ringMin/ringMax` shore ring (17–19 m from lake centre, clear of
+the 11.8 m water disc +1 m), walking onto each fires `loot:collected`, quest
+reaches `ready`. Two integrator fixes to the test harness only (marked): the
+THREE stub predated Cycle 4's camera-occlusion `Raycaster`, and the engine
+camera stub lacked `setDistance` — both stubs extended; test logic untouched.
+
+### What Cycle 4 actually delivered vs the task sheet
+
+- **World ✓** — vertex-color/terrain polish, rock clusters (scatter rock
+  181→215), and NEW camera occlusion (raycast pull-in vs `world.occluders`).
+- **Combat ⚠ partial** — ONLY the weapon-attachment fix landed (mount seated
+  at the fist: forward 0.22 m, tilt so the blade points out of the hand).
+  `enemies.js` and `combat.js` are **byte-identical to Cycle 3**: no
+  hit-stop, no new death animation, no walk bob, no staggered aggro, and
+  **no CR-6 fix** (see re-escalation below). The "enemy death animation"
+  phone-test item passes via the existing CR-5 topple+sink.
+- **Quests/NPCs ✓** — herb spawn ring fix, NPC idle set (weight shift,
+  breathing, head glance), ambient barks (`dialogue:ambient`), gossip
+  nodes, quest journal (`getJournal()` + `journal:entry`).
+- **UI ✓** — low-HP vignette, smooth bar lerp/gold roll, floating damage
+  numbers with world→screen projection, banner auto-dismiss (timeout +
+  animation), pickup pop animations.
+
+### Integration bugs found & fixed this build
+
+- **CR-8 (new, Combat): `EF.world.setPlayerObject` had no caller — pickup
+  collection was dead in EVERY integrated build.** world.js has exposed the
+  hook since Cycle 2 ("Combat: call this from your spawn path"); no module
+  ever called it, so proximity collection AND Cycle 4's camera occlusion
+  (both gate on `playerObj`) never ran in browser builds. The dept unit
+  test passes because it registers the player itself — masking the seam.
+  Glued in `integration/state-adapter.js` (register on boot + respawn);
+  verified live: 3/3 herbs collected, odda.herbs completed, journal entry
+  fired. Combat should own this call in Cycle 5.
+- **Damage numbers anchored at screen-centre, not the enemy:** ui.js's new
+  handler assumed a flat `{x,z,y}` `combat:damage` payload; combat.js ships
+  `position:{x,y,z}` (unchanged since Cycle 2). Integrator patch accepts
+  both shapes (AR-6). Verified: numbers now project to the struck enemy in
+  px; the player's own "-N" popup (separate handler) unchanged.
+- **Upload-over regressions caught AGAIN at merge:** UI's Cycle 4 files were
+  polished on a pre-build-05 base — all five build-05 UI patches (map
+  unclosable, 4× map scale, death-under-map soft-lock, speaker field, POI
+  fields) were missing and have been re-applied. The stale contract (minus
+  §1 rev A) was re-uploaded a third time; merge kept the ratified copy.
+  **Departments must pull the integration branch before editing.**
+
+### §10 checklist
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | Headers + dependency versions | PASS (world/quests/ui headers updated for Cycle 4; combat headers unchanged — consistent with unchanged files) |
+| 2 | Zero console errors | PASS — clean and diag builds; engine selfTest 26/26; warns = known non-canonical set + new `dialogue:ambient`, `journal:entry` (AR-5) |
+| 3 | Forbidden APIs / per-frame allocs | PASS — greps clean; vignette/bar smoothing are per-frame style writes (no allocation); occlusion raycast throttled to every 3rd frame |
+| 4 | Draw calls ≤60 | **FAIL — CR-6 RE-ESCALATED.** Roam max 45 ✓; village day 73; night fire circle **99/60** — unchanged, because the claimed fix is not in the delivered code |
+| 5 | CSS via cssText | PASS — zero static `<style>`; ui.js's single runtime-injected keyframe sheet unchanged (§2.2 carve-out; verified animating headless — efBanner/efRise run) |
+
+### Priority phone-test items (headless pre-verification)
+
+| Item | Result |
+|------|--------|
+| Floating damage numbers | PASS (after AR-6 patch: anchored above enemy, crit styling in place) |
+| HP vignette at low health | PASS — opacity 0.32 at 15% hp, 0 at full |
+| Weapon sits in hand | PASS — mount at fist (z 0.22, y −0.84, tilt 0.55π), model parented; **confirm the look on-device** |
+| Herb pickup | PASS — full loop: accept → 3 spawns on shore ring → 3 collected → ready → turn-in → journal |
+| NPC idle animations | PASS — leg sway Δ0.665, breathing Δ0.010 while unobserved |
+| Enemy death animation | PASS — topple to π/2 + sink (pre-existing CR-5 behavior; no new polish landed) |
+| Quest banner auto-dismiss | PASS — visible ≤3.0 s, display:none by 3.6 s (probe-verified) |
+| Draw calls in diag overlay | Working — badge shows live/max vs 60; expect OVER BUDGET at the village until CR-6 lands |
+
+---
+
 ## build-05 (UI/UX integration) — 2026-07-10, Integrator/QA
 
 **Deliverables:** `build-05.html`, `build-05-diag.html`, `index.html` (=

@@ -413,8 +413,13 @@
   bus.on('player:damaged', function(p){ if (!p||p.__selfTest) return; var a=p.amount||1;
     doFlash(Math.min(.5,.18+a*.02)); popup('-'+a, T.hp); markDirty(); });
   bus.on('combat:damage', function(p){ if (!p||p.__selfTest) return;   // §4 candidate: enemy hit numbers
-    // Combat sends {id, amount, x, z, y?, crit?}; number floats above the enemy.
-    dmgNumber(p.amount||0, p.x, p.z, p.y, p.crit); });
+    /* [build-06 integrator patch] combat.js ships {amount, crit, target,
+     * position:{x,y,z}} (unchanged since Cycle 2), not the flat {x,z,y}
+     * this handler assumed -- so every number fell back to screen-centre
+     * instead of anchoring above the enemy. Accept both shapes. AR-6:
+     * ratify ONE combat:damage payload shape when the event is canonicalized. */
+    var pos = (p.position && p.position.x != null) ? p.position : p;
+    dmgNumber(p.amount||0, pos.x, pos.z, pos.y, p.crit); });
   bus.on('loot:collected', function(p){ if (!p||p.__selfTest) return;
     var it=p.item||'item', n=p.count||1;
     if (it==='gold'){ popup('+'+n+' gold', T.gold); sfx('ui.coin'); }

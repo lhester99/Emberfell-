@@ -143,9 +143,26 @@
     }
   });
 
+  /* [build-06] world.js has exposed setPlayerObject since Cycle 2 with the
+   * note "(Combat: call this from your spawn path)" -- no module ever called
+   * it, so pickup proximity collection AND Cycle 4's camera occlusion were
+   * dead in every integrated build (the dept unit test injects the player
+   * itself, masking the seam). Register the player root once it exists and
+   * keep it registered across respawns. CR filed to Combat (CR-8). */
+  function registerPlayerWithWorld() {
+    if (EF.world && EF.world.setPlayerObject && EF.player && EF.player.root) {
+      EF.world.setPlayerObject(EF.player.root);
+    }
+  }
+  bus.on('player:spawned', function (p) {
+    if (p && p.__selfTest) return;
+    registerPlayerWithWorld();
+  });
+
   bus.on('game:booted', function (p) {
     if (p && p.__selfTest) return;
     rebuildQuests();
+    registerPlayerWithWorld();
   });
 
   console.log('[EF.stateAdapter] EF.state bridge active (TEMPORARY integrator glue)');
