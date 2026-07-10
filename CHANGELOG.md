@@ -63,6 +63,38 @@ Zero console errors; self-test 26/26 PASS.
 Note: draw-call budget unchanged from build-02 (max 84 observed this run —
 V-1/CR-5 against enemy mesh counts still open with Combat dept).
 
+### ⛔ CR-5 escalated to CYCLE 3 BLOCKER (2026-07-10)
+
+No fix has landed from Combat since build-02. Max observed draw calls: 87
+(build-02), 84 (build-03) vs the ≤60 budget — and Cycle 3 integration will
+only push this UP: Quests adds POI/map markers and UI adds HUD elements,
+each of which costs draw calls out of the same budget. CR-5 (merge enemy
+bodies into 1–2 vertex-colored meshes keeping only animation pivots
+separate, or InstancedMesh per part; pool the hp bars) must be resolved
+**before or alongside** Quests/UI integration, or build-04 ships over
+budget by construction. Integrator will not sign off a Cycle 3 build over
+60 calls.
+
+### World bounds — guidance for Quests (Cycle 3)
+
+Asked and answered as far as the delivered data can answer: the 220×220
+extent (`EF.worldData.terrain.size`, edges at ±110) reads as *tuned, not
+placeholder* — the mountain ridge crests exactly at the north edge
+(full influence z=−104), the sky dome (r=100), sun/moon transit (r=88),
+fog (16–58 m), and the engine camera far plane (120) are all scaled to it,
+and every POI sits within ±40. Only World Builder can rule it "final,"
+though — confirmation requested for Cycle 3 kickoff.
+
+**Binding guidance regardless of that answer:** do NOT hardcode ±110.
+Read `EF.worldData.terrain.size` at runtime (this is exactly what the
+build-03 patches in enemies.js/player.js do), and place POI markers from
+`EF.world.pois` — `[{id, label, x, z, y, radius}]` — which is
+bounds-correct by construction and already carries the resolved plateau
+height `y` for marker anchoring. Proposed for the Cycle 3 contract
+amendment alongside AR-1/AR-2: ratify `EF.worldData.terrain.size` (or an
+explicit `EF.world.bounds`) as public surface, since three departments now
+depend on it.
+
 ---
 
 ## build-02 (Cycle 2 integration) — 2026-07-09, Integrator/QA
