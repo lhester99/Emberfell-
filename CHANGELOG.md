@@ -1,5 +1,83 @@
 # EMBERFELL — CHANGELOG
 
+## build-05 (UI/UX integration) — 2026-07-10, Integrator/QA
+
+**Deliverables:** `build-05.html`, `build-05-diag.html`, `index.html` (=
+clean). UI/UX delivery (`UI:/ui.js`, `UI:/map.js`) integrated; the build-04
+temporary UI shim is **deleted** — the real UI owns all touch controls, HUD,
+panels, dialogue, map, and death/title screens. Load order appends:
+… npcs → **state-adapter (integrator glue) → ui → map** [→ diag overlay].
+
+### The EF.state gap and the integration adapter
+
+ui.js/map.js READ an authoritative `EF.state` view and ASK for changes via
+events (`player:respawn`, `ui:track`, `item:use`) — a data contract **no
+gameplay department publishes or consumes**. Unbridged, the HUD runs on
+fallback dummy data, the map arrow never moves, and the death screen's
+"Rise Again" does nothing. New `integration/state-adapter.js` (TEMPORARY
+integrator glue) bridges both directions using only public surfaces:
+mirrors `EF.player.stats/position` + `EF.quests` views into `EF.state`
+(mutate-in-place per tick; arrays rebuilt at event rate only), maintains an
+inventory ledger from `loot:collected`/`item:use`, and wires
+`player:respawn`→`EF.combat.respawn()`, `ui:track`→`EF.quests.track()`,
+`item:use(potion)`→`EF.combat.heal(30)` (heal() is combat.js's documented
+UI/inventory hook; **30 hp is a placeholder** pending Combat's item table).
+**AR-4:** ratify `EF.state` ownership — it should belong to a gameplay dept
+(Player) in Cycle 4, replacing this adapter.
+
+### UI bugs found & patched at integration (all marked `[build-05 integrator patch]`)
+
+- **map.js `el()` helper dropped its text argument** — its own call sites
+  pass (tag, css, TEXT). Result: the "MAP" title and the ✕ close glyph never
+  rendered; with the frame covering the full 402 px width (no tappable
+  backdrop gutter), the map was **unclosable on the phone**. Helper now
+  matches ui.js's 3-arg signature.
+- **map.js scale bug:** `terrain.size` (220, FULL extent per §1 rev A) was
+  used as the half-extent, so the chart mapped ±220 and the world bunched
+  into the middle quarter. Now maps ±size/2.
+- **Death/title screens rendered UNDER an open map:** overlays were children
+  of the UI root (z10 stacking context) so their z20 could never beat the
+  body-level map root (z18) — dying with the map open soft-locked "Rise
+  Again". Overlays now mount on document.body at z30.
+- **Dialogue payload:** npcs.js emits `speaker`; ui.js read only `p.name`
+  (blank speaker line). Accepts both now.
+- **POI fields:** map expected `{name,type}`; world pois carry `{id,label}`
+  (§1 rev A). Fallbacks added so pins get glyphs + captions.
+
+### §10 spot-check
+
+- Zero console errors both builds; engine selfTest 26/26; ui.selfTest PASS.
+- §2.2 note: ui.js injects one runtime-built `<style>` (keyframes/:active —
+  things cssText cannot express), with graceful degradation if stripped, per
+  the §2.2 carve-out "verify it survives on-device". **Phone pass must
+  confirm** damage flash + banners animate; everything else is cssText.
+- Non-canonical events now warned once each: `combat:damage` (AR-1),
+  `ui:menu`, `ui:start`, `ui:track`, `player:respawn` (**AR-5:** canonicalize
+  or re-point this UI ask-side set in the §4 table).
+- quest banners show "New quest"/"Quest complete" fallbacks — quests.js
+  `quest:*` payloads carry only `{id}`; AR-3 payload enrichment (add
+  `title`) would light them up.
+- **CR-6 unchanged and still blocking:** village day 74, night fire circle
+  **99/60** (67 NPC meshes + 21 player meshes; enemies stay at 16 batched).
+  Roaming is within budget (max 56). The map/minimap are 2D canvas — zero
+  WebGL draw-call cost.
+
+### Full UI verification (headless, real taps end-to-end)
+
+Title → "Enter World" → play mode. HUD tracks real stats (hp bar + numbers
+mirror `EF.player.stats`; weapon chip "Pinewatch Sword"). Talk button
+appears within 4 m of Maren via the adapter's interact probe → dialogue
+panel (speaker + text + choices) → accept → quest banner + toast + journal
+("maren.wolves: active", others "offered") → 5 wolf kills → counter 5/5 →
+turn-in → quest:completed. Bag panel lists a looted Healing Potion; "Use"
+heals 70→100 and decrements the ledger. Map opens (relief chart, POI
+captions, player arrow, quest pin; 7 `map:setMarker` events) and closes via
+✕. Death → "YOU DIED" screen → "Rise Again" → revived at full hp in play
+mode. Minimap redraws at 5 Hz throughout.
+
+---
+
+
 ## build-04 (Cycle 3 integration) — 2026-07-10, Integrator/QA
 
 **Deliverables:** `build-04.html` (clean), `build-04-diag.html` (overlay +

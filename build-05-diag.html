@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>EMBERFELL &mdash; build-05</title>
+<title>EMBERFELL &mdash; build-05-diag</title>
 <!-- ==========================================================================
-  EMBERFELL build-05  (Integrator/QA, Cycle 2)
+  EMBERFELL build-05-diag  (Integrator/QA, Cycle 2)
   Single-file build for the Claude artifact sandbox (about:srcdoc iframe).
   Contract v1.1 compliance:
     s2.2  no <style> tags anywhere -- inline style attributes / cssText only
@@ -15,7 +15,7 @@
     three.js r128 -> engine.js v1.1 -> data/biomes.js -> world.js
     -> data/weapons.js -> data/enemyTypes.js -> player.js -> enemies.js
     -> combat.js (combat dept LAST) -> npcs (stub) -> quests (stub)
-    -> questData -> dialogue -> quests -> npcs -> state-adapter (Integrator glue) -> ui -> map
+    -> questData -> dialogue -> quests -> npcs -> state-adapter (Integrator glue) -> ui -> map -> diag overlay (QA rig)
   NOTE: the task sheet's coarse order "engine-world-enemies-combat-player"
   conflicts with the delivered headers (player.js: "before combat.js/
   enemies.js"; combat.js: "Load order: LAST"). Headers win -- see
@@ -5512,6 +5512,142 @@
   };
   ensureRelief(); drawMini();
   console.log('[EF.map] ready — relief chart, POIs, quest pin, minimap (5 Hz)');
+})();
+</script>
+<!-- ================= diag.js             QA OVERLAY (diag build only) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL -- diag.js  (Integrator/QA overlay, build-05-diag ONLY)
+ * Contract v1.1 "Build discipline": error overlay + probes + FPS badge.
+ * The phone is the QA rig and cannot otherwise report errors.
+ *
+ * - No <style> tags (s2.2): every style is el.style.cssText.
+ * - No private rAF loop (s5): rides game:tick, throttled to 4 Hz.
+ * - Draw calls are read from renderer.info.render.calls (previous frame's
+ *   count, since render happens after the tick emit). Budget: <= 60.
+ * - Auto-runs EF.engine.selfTest() 2 s after boot; result shown in badge.
+ * - NOTE: the overlay allocates strings at 4 Hz while updating its DOM text.
+ *   That is a diag-build-only cost and is why this file never ships in the
+ *   clean build (CR-2 applies to shipping modules, not the QA rig).
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  var DRAW_BUDGET = 60;
+  var counts = { error: 0, warn: 0 };
+  var maxCalls = 0, selfTestResult = '--';
+
+  var badge = null, probeLine = null, logPanel = null;
+
+  function makeDom() {
+    badge = document.createElement('div');
+    badge.style.cssText =
+      'position:fixed;top:6px;left:6px;z-index:9999;pointer-events:none;' +
+      'font:11px/1.45 monospace;color:#d8f0d8;background:rgba(10,18,14,0.72);' +
+      'padding:5px 8px;border-radius:6px;border:1px solid rgba(120,200,140,0.35);' +
+      'white-space:pre;max-width:70vw;';
+    badge.textContent = '[EF diag] waiting for boot...';
+    probeLine = document.createElement('div');
+    probeLine.style.cssText =
+      'position:fixed;top:6px;right:6px;z-index:9999;pointer-events:none;' +
+      'font:10px/1.4 monospace;color:#cfd8e6;background:rgba(10,14,20,0.72);' +
+      'padding:4px 7px;border-radius:6px;border:1px solid rgba(130,160,220,0.3);' +
+      'white-space:pre;text-align:right;';
+    logPanel = document.createElement('div');
+    logPanel.style.cssText =
+      'position:fixed;left:6px;right:6px;bottom:6px;z-index:9999;display:none;' +
+      'pointer-events:none;font:10px/1.4 monospace;color:#ffd7d0;' +
+      'background:rgba(30,8,6,0.82);padding:5px 8px;border-radius:6px;' +
+      'border:1px solid rgba(255,110,90,0.5);max-height:34vh;overflow:hidden;' +
+      'white-space:pre-wrap;word-break:break-all;';
+    document.body.appendChild(badge);
+    document.body.appendChild(probeLine);
+    document.body.appendChild(logPanel);
+  }
+
+  var lines = [];
+  function pushLog(kind, msg) {
+    counts[kind]++;
+    if (!logPanel) return;
+    lines.push('[' + kind + '] ' + msg);
+    if (lines.length > 10) lines.shift();
+    logPanel.textContent = lines.join('\n');
+    logPanel.style.display = 'block';
+  }
+
+  function fmtArgs(args) {
+    var out = [];
+    for (var i = 0; i < args.length; i++) {
+      var a = args[i];
+      if (a && a.stack) out.push(String(a.message || a));
+      else { try { out.push(typeof a === 'string' ? a : JSON.stringify(a)); }
+             catch (e) { out.push(String(a)); } }
+    }
+    return out.join(' ');
+  }
+
+  /* mirror console.error / console.warn into the overlay */
+  var origErr = console.error, origWarn = console.warn;
+  console.error = function () { pushLog('error', fmtArgs(arguments)); origErr.apply(console, arguments); };
+  console.warn = function () { pushLog('warn', fmtArgs(arguments)); origWarn.apply(console, arguments); };
+  window.addEventListener('error', function (e) {
+    pushLog('error', (e.message || 'script error') + ' @' + (e.filename || '?') + ':' + (e.lineno || '?'));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    pushLog('error', 'unhandled rejection: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+
+  function probeText() {
+    var ok = function (b) { return b ? 'OK' : 'MISSING'; };
+    return 'EF.engine ' + ok(!!EF.engine) +
+      ' | EF.world ' + ok(!!EF.world && EF.world.ready) +
+      ' | EF.player ' + ok(!!EF.player) +
+      '\nEF.combat ' + ok(!!EF.combat) +
+      ' | EF.enemies ' + ok(!!EF.enemies) + (EF.enemies ? ' (' + EF.enemies.pool.length + ')' : '') +
+      '\nEF.npcs ' + ok(!!EF.npcs) + ' | EF.quests ' + ok(!!EF.quests) + ' | EF.ui ' + ok(!!EF.ui) +
+      '\nselfTest: ' + selfTestResult;
+  }
+
+  var acc = 0;
+  function onTick(t) {
+    if (t && t.__selfTest) return;
+    acc += t.dt;
+    if (acc < 0.25) return;
+    acc = 0;
+    var time = EF.engine.time;
+    var info = EF.engine.renderer ? EF.engine.renderer.info.render : null;
+    var calls = info ? info.calls : 0;
+    if (calls > maxCalls) maxCalls = calls;
+    var budget = maxCalls <= DRAW_BUDGET ? 'PASS' : 'OVER BUDGET';
+    badge.textContent =
+      'EMBERFELL build-05-diag\n' +
+      'fps ' + time.fps + '  frame ' + time.frame + '\n' +
+      'draw calls ' + calls + '  max ' + maxCalls + '/' + DRAW_BUDGET + ' ' + budget + '\n' +
+      (info ? 'tris ' + info.triangles + '\n' : '') +
+      (EF.player ? 'hp ' + Math.round(EF.player.stats.hp) + '/' + EF.player.stats.maxhp +
+        '  st ' + Math.round(EF.player.stats.st) + '  lvl ' + EF.player.stats.lvl + '\n' : '') +
+      'phase ' + (EF.world && EF.world.getTimePhase ? EF.world.getTimePhase() : '--') +
+      '  err ' + counts.error + '  warn ' + counts.warn;
+    probeLine.textContent = probeText();
+  }
+
+  EF.bus.on('game:booted', function (p) {
+    if (p && p.__selfTest) return;
+    if (!badge) makeDom();
+    EF.bus.on('game:tick', onTick);
+    setTimeout(function () {
+      try {
+        var r = EF.engine.selfTest();
+        selfTestResult = (r.pass ? 'PASS' : 'FAIL') + ' (' + r.results.length + ' events)';
+      } catch (e) { selfTestResult = 'THREW: ' + e.message; }
+    }, 2000);
+  });
+
+  /* if boot already happened (script order safety) */
+  if (EF.engine && EF.engine.booted) {
+    makeDom();
+    EF.bus.on('game:tick', onTick);
+  }
 })();
 </script>
 </body>
