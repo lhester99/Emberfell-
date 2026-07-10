@@ -1,5 +1,98 @@
 # EMBERFELL — CHANGELOG
 
+## build-04 (Cycle 3 integration) — 2026-07-10, Integrator/QA
+
+**Deliverables:** `build-04.html` (clean), `build-04-diag.html` (overlay +
+FPS badge), `index.html` (= clean). New this cycle: Quests & NPCs delivery
+integrated (questData, dialogue, quests, npcs — 6 quests, 5 NPCs), Combat's
+CR-5 enemies.js rewrite integrated.
+
+### ⚠ UI DEPARTMENT DID NOT DELIVER
+
+The task sheet lists `ui/ui.js` + `ui/map.js`; neither exists on any branch
+of the repo. Consequences, handled as follows:
+- The instruction "remove diag-controls.js — UI now owns all touch controls"
+  is void: with no UI there are no touch controls, no dialogue renderer, no
+  toast display, no quest HUD, no map. Every Cycle 3 priority test would be
+  untestable on the phone.
+- Integrator therefore REPLACED diag-controls.js with **ui-temp.js**
+  (TEMPORARY, both build flavors): ATK/JMP/TALK buttons via
+  `input.bindButton` (npcs.js already polls the `interact` edge), RESPAWN
+  pill shown only while dead, a dialogue panel rendering `dialogue:open`
+  choices (taps call `EF.npcs.choose(i)` per npcs.js's own guidance), `ui:toast`
+  rendering, a tracked-quest HUD refreshed at event rate from
+  `EF.quests.objectiveText`, and a `map:setMarker` text line. Contract-clean:
+  cssText only, no rAF, event-rate DOM writes. **Delete when UI ships.**
+- `EF.ui` stays a reserved stub. `Quests:/harness.js` is a Node-only test
+  harness (`require`/`vm`) and is excluded from browser builds.
+
+### §10 checklist — results
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | Headers + dependency versions | **PASS** — Quests modules declare THREE r128 / engine v1.1 / world deps and honor §1 rev A (POI-anchored NPC placement, no literal world coords) |
+| 2 | Zero console errors on boot | **PASS** — 0 errors both builds; selfTest 26/26 PASS |
+| 3 | Forbidden APIs + per-frame allocations | **PASS** — Quests files grep clean (ASCII, console.log/warn/error only, no rAF/`<style>`/innerHTML); quests.js goto scan throttled at 4 Hz; npcs.js tick is allocation-free |
+| 4 | Draw calls ≤60 | **CR-5 CONFIRMED FIXED & CLOSED** for enemies: pool is now 16 fixed calls (4 instanced bodies + 10 limb batches + 2 shared hp bars, was ~170 potential). **BUT the budget FAILS again with new attribution — CR-6 filed**: measured 45 roaming, 73 at the village by day, **99 at the night fire circle** (all 5 NPCs seated + player + stars). npcs.js builds 5 unmerged humanoids = **67 meshes**; player rig is 21 more (Combat) |
+| 5 | CSS via cssText only | **PASS** — zero `<style>` tags anywhere (all grep hits are comments); every style in engine/ui-temp/diag is `el.style.cssText` or inline attribute |
+
+### Priority tests (headless rig, real button taps end-to-end)
+
+| Test | Result |
+|------|--------|
+| Movement | PASS (WASD + joystick path unchanged) |
+| Combat | PASS — greatsword swings killed a wolf through the real state machine |
+| Death → respawn | PASS — RESPAWN appears on death, revives at village, full hp |
+| Talk to NPC | PASS — TALK tap → `dialogue:open` (Maren, wolves offer), panel renders |
+| Accept quest | PASS — choice tap → `quest:started`, toast, HUD tracker |
+| Kill counter | PASS — "Slay timber wolves (5/5)" via `enemy:died` events only |
+| Complete quest | PASS — turn-in at Maren → `quest:completed`, retrack |
+| Map marker | PARTIAL — `map:setMarker` emitted correctly and rendered as HUD text by the shim; **no real map exists (UI/map.js missing)** |
+| Inventory | **NOT TESTABLE — no inventory module exists in any department.** Closest ledger: `EF.player.stats` gold/xp (kill-credited by combat.js) |
+| Level up | PASS — `player:levelup` fired, stats grew, heal-to-full on level |
+
+### New findings
+
+- **CR-6 (major, Quests/NPCs + Combat): draw-call budget re-escalated.**
+  CR-5 is closed — the enemy fix works and is the reference implementation.
+  Same treatment needed for: npcs.js humanoids (67 meshes → merge each body
+  to 1–2 vertex-colored meshes keeping the 4 limb pivots, or instance the
+  shared humanoid across all 5), and the player rig (21 meshes → merge
+  static body, keep arm/leg/cloak pivots). Projected result: village night
+  scene ~35–40 calls, comfortably under 60.
+- **CR-7 (major, cross-dept Quests+Combat): quest rewards are never
+  credited.** quests.js announces rewards ("+100 gold, +150 XP" toast) and
+  deliberately defers crediting to "a Player module reading
+  `questData[id].reward` on `quest:completed`" — no such module exists.
+  Verified live: completing Wolves at the Gate paid 0 gold, 0 xp.
+  Combat already exposes `EF.combat.gainXp`; recommend Combat own a
+  `quest:completed` handler in Cycle 4 (it is the stats-math authority).
+- **AR-1 still open** (`combat:damage` not canonical; warns once per boot).
+  **AR-2 scope grows:** new EF keys `EF.questData`, `EF.dialogue` need
+  registry ratification.
+- **AR-3 (new):** `map:setMarker` and `dialogue:open`/`dialogue:choice`
+  payloads as actually shipped are richer than the §4 table
+  (`{questId,label,x,y,z,radius}` / `{npc,speaker,text,choices}` /
+  `choiceId` vs `index`). Names are canonical so nothing warns; the table
+  should be amended to the shipped shapes before UI codes against them.
+
+### Integration notes
+
+- **D-2 (load order):** task order "…npcs → quests…" contradicts the headers
+  (npcs.js hard-fails without EF.quests). Shipped: questData → dialogue →
+  quests → npcs. Headers win, as in D-1.
+- **Upload-over regression caught at merge:** Combat's re-uploaded files were
+  based on pre-build-03 sources — the off-mesh spawn fixes and the troll
+  zone fix would have silently reverted. The bounds patch was re-applied to
+  the CR-5 rewrite (marked `[build-03 integrator patch, re-applied …]`);
+  troll zone, player clamp, and the ratified §1 addendum survive via the
+  merge. **Departments: pull the integration branch before editing, or the
+  next re-upload will revert ratified fixes again.** Verified post-merge:
+  14/14 enemies on-mesh.
+
+---
+
+
 ## build-03 (playtest fixes) — 2026-07-09, Integrator/QA
 
 **Deliverables:** `build-03.html` (clean), `build-03-diag.html` (overlay +
