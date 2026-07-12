@@ -50,7 +50,7 @@
      * world.js exposes these (plus resolved y) as EF.world.pois.
      * -------------------------------------------------------------------- */
     pois: [
-      { id: 'village', label: 'Emberfell Village', x: 0,   z: 10,  radius: 15, flatten: true, drop: 0    },
+      { id: 'village', label: 'Emberfell Village', x: 0,   z: 10,  radius: 30, flatten: true, drop: 0    },
       { id: 'tower',   label: 'The Sealed Tower',  x: 32,  z: -24, radius: 8,  flatten: true, drop: 0.4  },
       { id: 'stones',  label: 'Standing Stones',   x: -30, z: -32, radius: 9,  flatten: true, drop: 0.2  },
       { id: 'arch',    label: 'Ruined Arch',       x: 20,  z: 36,  radius: 7,  flatten: true, drop: 0.1  },

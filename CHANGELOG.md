@@ -11,6 +11,7 @@
 | build-05 | 3 | 2026-07-10 | UI/UX integrated (HUD, panels, dialogue, map+minimap, death/title); EF.state adapter glue; 5 UI bugs patched (map unclosable, 4× map scale, death-under-map, payload/field mismatches) |
 | build-06 | 4 | 2026-07-10 | Polish integration + herb-pickup fix verified by dept test (4/4); setPlayerObject seam glued (pickups + camera occlusion were dead in all prior builds); damage-number anchoring payload patched; CR-6 re-escalated (fix not delivered) |
 | build-07 | 5 | 2026-07-12 | Feature: `EF.engine.collision` registry (cylinder-vs-AABB/circle) resolving player + NPCs every tick; village expansion (tavern, blacksmith, 3 stalls + vendors, notice board, 4 new NPCs) all in `EF.world.pois`; enterable interiors via roof-reveal. Single integrator module, zero dept-file edits |
+| build-08 | 5 | 2026-07-12 | Spread-out settlement (req 7-12): buildings on a ring in a 60-unit clearing with 23.5u between them; ALL huts now enterable (world.js solid huts removed, rebuilt as enterable); large two-story tavern (3.2x hut, porch + windows), open-front blacksmith (2x hut); ground pads + door ramps so buildings sit level on rolling terrain and you walk in smoothly |
 
 ### Change requests (CR) — status
 
@@ -38,6 +39,73 @@
 | AR-5 | ⛔ open | Canonicalize/repoint UI ask-side events: `ui:menu`, `ui:start`, `ui:track`, `player:respawn` + Cycle 4 additions `journal:entry`, `dialogue:ambient` |
 | AR-6 | ⛔ open (new, build-06) | Ratify ONE `combat:damage` payload shape — combat ships `position:{x,y,z}`, UI assumed flat `{x,z,y}`; integrator patch accepts both |
 
+
+## build-08 (spread-out settlement + all-enterable) — 2026-07-12, Integrator/QA
+
+Requirements 7-12. Continues in `integration/buildings.js`; needed two marked
+department edits because the original huts live in world.js.
+
+### Layout & spacing (req 7, 9)
+- Village clearing widened to **60-unit diameter** (biomes.js village POI
+  radius 15 -> 30; clears trees + flattens the settlement footprint).
+- The 5 main buildings sit on a ring: **min gap 23.5u between any two**
+  (well over the 15u floor), built spread ~49u inside the 60u clearing.
+- Each building's door faces the village centre, and the plaza props (fire,
+  well, market, notice) stay within ~7u of centre, leaving **clear radial
+  approaches** from the centre to every building.
+- Verified headless: min main-building gap 23.5u; walk-in from the plaza to
+  the tavern crosses the door and lands the player on the floor.
+
+### All structures enterable (req 8)
+- **world.js's three solid decorative huts + the fence were removed**
+  (marked `[build-08 integrator]`) -- a baked solid mesh can't be hollowed.
+  The huts are rebuilt here as 3 **enterable** cottages (hollow, door gap,
+  roof-reveal, interior: bed, table, hearth). No village structure is
+  impassable or unenterable now. Verified: all 5 buildings hide their roof
+  on entry and restore it on exit; hut walls block (no phase-through).
+
+### Tavern (req 10) & blacksmith (req 11) & scale (req 12)
+- **Tavern**: 9 x 7.2 = 64.8 sq units = **3.2x a hut** (4.5x4.5). Two-story
+  wall height with a mid-floor band + two window rows (warm glowing panes),
+  a covered porch on posts, and a spacious interior (bar counter, fireplace,
+  three tables + stools). Clearly the largest building bar the tower.
+- **Blacksmith**: 6.6 x 6.4 = 42.2 = **2.08x a hut**. Open front (the wall
+  facing the village is omitted) so the forge is visible from outside, with
+  a covered work area on posts; interior has forge, anvil, weapon rack.
+- Scale order verified: stall (2.0) < hut (20.3) < blacksmith (42.2) <
+  tavern (64.8) < tower. Ratios 3.2x / 2.08x confirmed.
+
+### Making it sit on the ground (the hard part)
+The analytic terrain rises toward the clearing rim, so a big flat floor far
+from centre would have ground poking through it. Solution: **ground pads +
+door ramps.**
+- Each building flattens the walkable ground under its footprint to the
+  footprint's high point by wrapping `EF.world.terrainH` (the sampler every
+  gameplay system reads for gravity), so the player/NPCs stand level with the
+  floor inside. A **foundation skirt** fills the downhill gap (reads as a
+  stone plinth on a hillside).
+- A **door ramp** (sampler ramp + visual steps) smooths the threshold so you
+  walk up into a building rather than hopping. Verified: approaching the
+  tavern from the plaza, the player's height goes 1.09 -> 1.10 and ends
+  standing on the floor inside.
+- NOTE on req-7 "60-80 diameter": the *clearing* is 60u; the *buildings*
+  span ~49u with 23.5u gaps. Pushing building centres to a literal 60-80u
+  spread would either put them on rolling ground (taller hillside
+  foundations) or need an unnaturally large flat disc that would collide
+  with the neighbouring Ruined Arch POI. The ring radius is a single tunable
+  constant if a wider spread is wanted.
+
+### §10 / regressions
+- Clean + diag builds boot with **0 console errors**; engine selfTest 26/26;
+  ASCII-clean; no static `<style>`; no private rAF. Existing NPCs (Maren) +
+  the full quest loop verified intact; collision resolves player + all NPCs.
+- Draw calls: **~47 roaming / at the village edge** (spread + frustum culling
+  helps), up to **~110 looking across the whole village from centre at
+  night**. Over the 60 target -- CR-6 (department NPC/player mesh batching)
+  remains the lever; this feature merges all its own static geometry into one
+  mesh + one glow mesh and keeps NPCs to one mesh each.
+
+---
 
 ## build-07 (collision + village expansion) — 2026-07-12, Integrator/QA
 

@@ -255,18 +255,11 @@
     }
     pushGeom(acc, GEO.cyl, COL.coal, mat(cx, y + 0.07, cz, 1.9, 0.14, 1.9, 0));
 
-    /* three huts ringing the pit */
-    var hutAngles = [0.7, 2.8, 4.9];
-    for (i = 0; i < hutAngles.length; i++) {
-      var ha = hutAngles[i];
-      var hx = cx + Math.cos(ha) * 7.2, hz = cz + Math.sin(ha) * 7.2;
-      pushGeom(acc, GEO.cyl, COL.wall, mat(hx, y + 1.0, hz, 3.4, 2.0, 3.4, 0));
-      pushGeom(acc, GEO.cone, COL.roof, mat(hx, y + 2.75, hz, 4.7, 1.5, 4.7, ha));
-      var da = Math.atan2(cz - hz, cx - hx); // door faces the fire
-      pushGeom(acc, GEO.box, COL.woodDark,
-        mat(hx + Math.cos(da) * 1.66, y + 0.62, hz + Math.sin(da) * 1.66,
-            0.8, 1.24, 0.16, -da + Math.PI / 2, 0, 0));
-    }
+    /* [build-08 integrator: the three solid decorative huts were REMOVED from
+     * here. They are now built as spaced-out, ENTERABLE huts (hollow, door gap,
+     * roof-reveal, interior) in integration/buildings.js alongside the tavern,
+     * blacksmith, and market -- so no village structure is impassable
+     * (requirement 8). The fire pit and well below stay world-owned. */
 
     /* well */
     var wx = cx + 4.6, wz = cz - 4.2;
@@ -276,24 +269,9 @@
     pushGeom(acc, GEO.box, COL.wood, mat(wx + 0.95, y + 1.45, wz, 0.15, 1.5, 0.15, 0));
     pushGeom(acc, GEO.cone, COL.roof, mat(wx, y + 2.5, wz, 2.7, 0.75, 2.7, 0.4));
 
-    /* fence run along the south approach, with a gate gap */
-    function fenceRun(x0, z0, x1, z1) {
-      var dx = x1 - x0, dz = z1 - z0;
-      var len = Math.sqrt(dx * dx + dz * dz);
-      var n = Math.max(2, Math.round(len / 1.5));
-      var yaw = Math.atan2(dx, dz);
-      for (var k = 0; k <= n; k++) {
-        var t = k / n;
-        var px = x0 + dx * t, pz = z0 + dz * t;
-        pushGeom(acc, GEO.box, COL.wood,
-          mat(px, terrainH(px, pz) + 0.55, pz, 0.14, 1.1, 0.14, 0));
-      }
-      var mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
-      pushGeom(acc, GEO.box, COL.wood,
-        mat(mx, terrainH(mx, mz) + 0.88, mz, 0.09, 0.09, len, yaw, 0, 0));
-    }
-    fenceRun(cx - 10.5, cz + 8.5, cx - 2.2, cz + 10.5);
-    fenceRun(cx + 2.2, cz + 10.5, cx + 10.5, cz + 8.5);
+    /* [build-08 integrator: the south-approach fence was REMOVED -- it cut
+     * across the now much wider settlement (requirement 7, ~60-unit village).
+     * Fire pit + well remain; all buildings are placed by buildings.js. */
   }
 
   function buildTower(acc) {
