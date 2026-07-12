@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>EMBERFELL &mdash; build-08</title>
+<title>EMBERFELL &mdash; build-09</title>
 <!-- ==========================================================================
-  EMBERFELL build-08  (Integrator/QA, Cycle 2)
+  EMBERFELL build-09  (Integrator/QA, Cycle 2)
   Single-file build for the Claude artifact sandbox (about:srcdoc iframe).
   Contract v1.1 compliance:
     s2.2  no <style> tags anywhere -- inline style attributes / cssText only
@@ -952,19 +952,29 @@
      * the sampler and the visual mesh can never disagree.
      * -------------------------------------------------------------------- */
     terrain: {
-      size: 220,            // world extents: size x size, centered on origin
-      segments: 110,        // visual mesh grid (2 m vertex spacing)
-      baseAmp: 2.6,         // rolling-hill amplitude (m)
+      /* [build-09] world expanded from +/-110 to +/-200 (size 220 -> 400).
+       * Mesh spacing kept near 2.2 m (segments 180) so detail holds; the
+       * whole terrain is still ONE draw call regardless of segment count. */
+      size: 400,            // world extents: size x size, centered on origin (+/-200)
+      segments: 180,        // visual mesh grid (~2.2 m vertex spacing)
+      baseAmp: 2.9,         // rolling-hill amplitude (m) -- a touch more relief
       baseFreq: 0.045,
       octaves: 4,
       lacunarity: 2.05,
       gain: 0.5,
-      mountain: {           // ridge rising toward the north edge
-        start: -46,         // influence begins as z drops past this
-        full: -104,         // full influence
-        height: 20,         // added meters at full influence
+      mountain: {           // ridge rising toward the north edge (bigger world)
+        start: -70,         // influence begins as z drops past this
+        full: -180,         // full influence near the north edge
+        height: 30,         // added meters at full influence
         freq: 0.03,
         octaves: 3
+      },
+      canyon: {             // [build-09] uncrossable river canyon, east-west band
+        z: -78,             // centre line (middle distance, north of the village)
+        halfWidth: 7,       // flat channel half-width
+        rim: 15,            // blend distance from channel to rim
+        depth: 9,           // metres carved below the local ground
+        waterY: -6.6        // water plane height inside the canyon
       },
       colors: {             // vertex-color palette, blended by height/slope
         grass:    0x4a7c3a,
@@ -973,8 +983,8 @@
         rock:     0x7d7f86,
         snow:     0xe8edf4
       },
-      snowHeight: 12.5,     // snow fades in above this elevation
-      rockSlope: 0.75       // gradient magnitude where rock takes over
+      snowHeight: 15.0,     // snow fades in above this elevation
+      rockSlope: 0.72       // gradient magnitude where rock takes over
     },
 
     /* ---- points of interest ----------------------------------------------
@@ -999,59 +1009,94 @@
      * world, above maxSlope, or outside [minH,maxH]. `tint` multiplies the
      * mesh's baked vertex colors per instance (jitter adds variation).
      * -------------------------------------------------------------------- */
+    /* [build-09] regions extended to the +/-200 world. Every rule scatters
+     * via ONE InstancedMesh per species (world.js buildScatter) -- more
+     * instances, NOT more draw calls. Counts kept moderate for phone tris. */
     biomes: [
       {
-        id: 'village_clearing',        // kept intentionally empty
-        region: { kind: 'circle', x: 0, z: 10, r: 20 },
+        id: 'village_clearing',        // kept clear; the stone wall sits at r~35
+        region: { kind: 'circle', x: 0, z: 10, r: 34 },
         scatter: []
       },
       {
-        id: 'pine_forest',
-        region: { kind: 'ring', x: 0, z: 4, rMin: 22, rMax: 82 },
+        id: 'pine_forest',             // the broad ring around the village
+        region: { kind: 'ring', x: 0, z: 4, rMin: 38, rMax: 150 },
         scatter: [
-          { mesh: 'pine', count: 320, minScale: 0.85, maxScale: 1.6,
-            maxSlope: 0.62, minH: -2.5, maxH: 9.5, tint: 0xffffff, jitter: 0.22 },
-          { mesh: 'tuft', count: 240, minScale: 0.7,  maxScale: 1.3,
-            maxSlope: 0.5,  minH: -2.5, maxH: 8,   tint: 0xffffff, jitter: 0.3 },
-          { mesh: 'rock', count: 26,  minScale: 0.35, maxScale: 0.9,
-            maxSlope: 0.9,  minH: -3,   maxH: 10,  tint: 0x8b8d93, jitter: 0.18 }
+          { mesh: 'pine', count: 520, minScale: 0.85, maxScale: 1.7,
+            maxSlope: 0.62, minH: -2.5, maxH: 11, tint: 0xffffff, jitter: 0.22 },
+          { mesh: 'tuft', count: 360, minScale: 0.7,  maxScale: 1.3,
+            maxSlope: 0.5,  minH: -2.5, maxH: 9,   tint: 0xffffff, jitter: 0.3 },
+          { mesh: 'rock', count: 60,  minScale: 0.35, maxScale: 1.0,
+            maxSlope: 0.9,  minH: -3,   maxH: 12,  tint: 0x8b8d93, jitter: 0.18 }
+        ]
+      },
+      {
+        id: 'dark_forest',             // [build-09] dense dark wood, EAST quadrant
+        region: { kind: 'circle', x: 120, z: -20, r: 78 },
+        scatter: [
+          { mesh: 'pine', count: 640, minScale: 1.0, maxScale: 2.0,
+            maxSlope: 0.7, minH: -3, maxH: 16, tint: 0x5f7a58, jitter: 0.28 },   // darker canopy
+          { mesh: 'pine', count: 280, minScale: 0.7, maxScale: 1.2,
+            maxSlope: 0.7, minH: -3, maxH: 16, tint: 0x4c6350, jitter: 0.3 },    // shadowed understory
+          { mesh: 'rock', count: 70, minScale: 0.5, maxScale: 1.8,
+            maxSlope: 1.4, minH: -3, maxH: 18, tint: 0x6a6c72, jitter: 0.2 },
+          { mesh: 'tuft', count: 160, minScale: 0.6, maxScale: 1.1,
+            maxSlope: 0.5, minH: -3, maxH: 12, tint: 0x6f8a5a, jitter: 0.3 }
         ]
       },
       {
         id: 'birch_grove',
-        region: { kind: 'circle', x: 54, z: 24, r: 32 },
+        region: { kind: 'circle', x: -90, z: 70, r: 46 },
         scatter: [
-          { mesh: 'birch', count: 130, minScale: 0.8, maxScale: 1.45,
-            maxSlope: 0.55, minH: -2.5, maxH: 7, tint: 0xffffff, jitter: 0.2 },
-          { mesh: 'tuft',  count: 130, minScale: 0.7, maxScale: 1.2,
-            maxSlope: 0.5,  minH: -2.5, maxH: 7, tint: 0xd9e08a, jitter: 0.25 }
+          { mesh: 'birch', count: 210, minScale: 0.8, maxScale: 1.5,
+            maxSlope: 0.55, minH: -2.5, maxH: 8, tint: 0xffffff, jitter: 0.2 },
+          { mesh: 'tuft',  count: 200, minScale: 0.7, maxScale: 1.2,
+            maxSlope: 0.5,  minH: -2.5, maxH: 8, tint: 0xd9e08a, jitter: 0.25 }
         ]
       },
       {
         id: 'rocky_highlands',
-        region: { kind: 'zband', zMin: -92, zMax: -48 },
+        region: { kind: 'zband', zMin: -150, zMax: -80 },
         scatter: [
-          { mesh: 'rock', count: 95, minScale: 0.5, maxScale: 2.4,
-            maxSlope: 1.6, minH: 1, maxH: 14, tint: 0x84868e, jitter: 0.2 },
-          { mesh: 'pine', count: 55, minScale: 0.7, maxScale: 1.15,
-            maxSlope: 0.7, minH: 1, maxH: 11, tint: 0xbfc9c2, jitter: 0.15 }
+          { mesh: 'rock', count: 220, minScale: 0.5, maxScale: 2.8,
+            maxSlope: 1.8, minH: 1, maxH: 22, tint: 0x84868e, jitter: 0.2 },
+          { mesh: 'pine', count: 120, minScale: 0.7, maxScale: 1.2,
+            maxSlope: 0.7, minH: 1, maxH: 15, tint: 0x9fb0a6, jitter: 0.15 }
         ]
       },
       {
-        id: 'snowy_peaks',
-        region: { kind: 'zband', zMin: -110, zMax: -86 },
+        id: 'snowy_peaks',             // below the merged mountain cones, north edge
+        region: { kind: 'zband', zMin: -198, zMax: -150 },
         scatter: [
-          { mesh: 'rock', count: 60, minScale: 0.6, maxScale: 2.8,
-            maxSlope: 2.2, minH: 8, maxH: 40, tint: 0xe4eaf1, jitter: 0.1 },
-          { mesh: 'pine', count: 24, minScale: 0.6, maxScale: 1.0,
-            maxSlope: 0.8, minH: 8, maxH: 20, tint: 0xdfe7e4, jitter: 0.1 }
+          { mesh: 'rock', count: 150, minScale: 0.7, maxScale: 3.2,
+            maxSlope: 2.4, minH: 10, maxH: 60, tint: 0xe4eaf1, jitter: 0.1 },
+          { mesh: 'pine', count: 60, minScale: 0.6, maxScale: 1.0,
+            maxSlope: 0.8, minH: 8, maxH: 24, tint: 0xdfe7e4, jitter: 0.1 }
+        ]
+      },
+      {
+        id: 'open_scrubland',          // [build-09] scattered rocks so open west/south is not empty
+        region: { kind: 'zband', zMin: 40, zMax: 190 },
+        scatter: [
+          { mesh: 'rock', count: 130, minScale: 0.4, maxScale: 2.2,
+            maxSlope: 1.4, minH: -3, maxH: 14, tint: 0x8a8c92, jitter: 0.22 },
+          { mesh: 'tuft', count: 220, minScale: 0.6, maxScale: 1.2,
+            maxSlope: 0.5, minH: -3, maxH: 10, tint: 0xbfd28a, jitter: 0.3 }
+        ]
+      },
+      {
+        id: 'west_reach',              // [build-09] rocks + tufts filling the western open ground
+        region: { kind: 'zband', zMin: -40, zMax: 40 },
+        scatter: [
+          { mesh: 'rock', count: 90, minScale: 0.4, maxScale: 2.0,
+            maxSlope: 1.4, minH: -3, maxH: 14, tint: 0x84868e, jitter: 0.22 }
         ]
       },
       {
         id: 'tower_ruins',                 // scattered rubble ringing the sealed tower
         region: { kind: 'ring', x: 32, z: -24, rMin: 9, rMax: 22 },
         scatter: [
-          { mesh: 'rock', count: 34, minScale: 0.5, maxScale: 2.0,
+          { mesh: 'rock', count: 40, minScale: 0.5, maxScale: 2.0,
             maxSlope: 1.5, minH: -4, maxH: 16, tint: 0x70727a, jitter: 0.22 }
         ]
       }
@@ -1075,7 +1120,7 @@
   };
 })();
 </script>
-<!-- ================= world.js               Cycle 4  (World Builder) ================= -->
+<!-- ================= world.js               build-09  (World Builder -- +/-200 world) ================= -->
 <script>
 /* ============================================================================
  * EMBERFELL — world.js  (v1.0, Cycle 2)
@@ -1163,6 +1208,17 @@
     var mm = smooth(clamp01((m.start - z) / (m.start - m.full)));
     if (mm > 0) {
       h += mm * m.height * (0.55 + 0.45 * fbm(x * m.freq + 100, z * m.freq - 70, m.octaves, 2.1, 0.5));
+    }
+    /* [build-09] canyon: carve an east-west channel; too deep+walled to cross
+     * (buildings.js adds collision along it). Part of the field so the mesh and
+     * the sampler agree. */
+    var cy = T.canyon;
+    if (cy) {
+      var cdz = Math.abs(z - cy.z);
+      if (cdz < cy.halfWidth + cy.rim) {
+        var ct = 1 - smooth(clamp01((cdz - cy.halfWidth) / cy.rim)); // 1 in channel, 0 at rim
+        h -= cy.depth * ct;
+      }
     }
     return h;
   }
@@ -1544,7 +1600,7 @@
   /* ===================== 6. SKY / DAY-NIGHT ============================ */
 
   var SKY_R = 100;
-  var dayLength = 240; // seconds per full day
+  var dayLength = 600; // [build-09] 10-minute full day/night cycle
   var sky = null, skyGeo = null, skyMix = null;
   var sunMesh = null, moonMesh = null, stars = null, starMat = null;
   var dirLight = null, hemiLight = null;
@@ -1638,10 +1694,12 @@
   }
 
   world.getTimePhase = function () {
+    /* [build-09] cycle=600s. dawn 0.20-0.35 (~90s), day 0.35-0.62 (~162s),
+     * dusk 0.62-0.77 (~90s), night 0.77-0.20 (~258s > day). Lamps read this. */
     var t = world.time01;
-    if (t >= 0.22 && t < 0.32) return 'dawn';
-    if (t >= 0.32 && t < 0.70) return 'day';
-    if (t >= 0.70 && t < 0.80) return 'dusk';
+    if (t >= 0.20 && t < 0.35) return 'dawn';
+    if (t >= 0.35 && t < 0.62) return 'day';
+    if (t >= 0.62 && t < 0.77) return 'dusk';
     return 'night';
   };
   world.setTime01 = function (t) { world.time01 = ((t % 1) + 1) % 1; };
@@ -1671,8 +1729,8 @@
     /* fog + clear color sync */
     if (scene.fog) {
       scene.fog.color.copy(curFog);
-      scene.fog.near = lerp(14, 18, dayF);
-      scene.fog.far = lerp(46, 60, dayF);   // documented deviation, see notes
+      scene.fog.near = lerp(20, 28, dayF);          // [build-09] scaled for +/-200
+      scene.fog.far = lerp(78, 108, dayF);  // hides the terrain edge (<camera far 120)
     }
     if (scene.background && scene.background.isColor) scene.background.copy(curFog);
 
@@ -1733,6 +1791,14 @@
   }
 
   function updateWaterFire(elapsed) {
+    if (canyonWater && canyonBase) {
+      var cp = canyonWater.geometry.attributes.position, ca = cp.array;
+      for (var ci = 0; ci < cp.count; ci++) {
+        var bx = canyonBase[ci * 3];
+        ca[ci * 3 + 1] = Math.sin(elapsed * 1.3 + bx * 0.5) * 0.05;
+      }
+      cp.needsUpdate = true;
+    }
     if (water) {
       var pos = water.geometry.attributes.position;
       var arr = pos.array;
@@ -1867,6 +1933,48 @@
     occApplied = rig.distance;
   }
 
+  /* ===================== 8c. MOUNTAIN RANGE + CANYON [build-09] ========= */
+  /* Snow-capped peaks along the north edge: 8 peaks x (rock cone + snow cone)
+   * all MERGED into ONE mesh (draw-call budget). */
+  function buildMountains(scene) {
+    var acc = beginMerge();
+    var rock = 0x6c6e77, snow = 0xeaf0f7;
+    var peaks = [
+      [-165, -184, 40, 44], [-118, -190, 52, 56], [-72, -195, 64, 62],
+      [-22, -189, 48, 50], [28, -196, 70, 68], [78, -188, 56, 58],
+      [128, -192, 50, 54], [170, -183, 38, 42]
+    ];
+    var rng = mulberry32(D.seed + 51);
+    for (var i = 0; i < peaks.length; i++) {
+      var px = peaks[i][0], pz = peaks[i][1], h = peaks[i][2], r = peaks[i][3];
+      var by = rawH(px, pz) - 2;
+      var yaw = rng() * Math.PI;
+      pushGeom(acc, GEO.cone, rock, mat(px, by + h / 2, pz, r, h, r, yaw));
+      pushGeom(acc, GEO.cone, snow, mat(px, by + h * 0.80, pz, r * 0.40, h * 0.42, r * 0.40, yaw));
+      // a lower shoulder so the range reads as connected, not lone cones
+      pushGeom(acc, GEO.cone, rock, mat(px + r * 0.6, by + h * 0.32, pz + 6, r * 0.7, h * 0.6, r * 0.7, yaw + 1));
+    }
+    var mesh = endMerge(acc, 'ef-mountains');
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    world.occluders.push(mesh);
+  }
+
+  /* Water plane filling the carved canyon (the terrain channel is in rawH). */
+  var canyonWater = null, canyonBase = null;
+  function buildCanyonWater(scene) {
+    var cy = T.canyon; if (!cy) return;
+    var geo = new THREE.PlaneGeometry(T.size - 8, cy.halfWidth * 2, 60, 2);
+    geo.rotateX(-Math.PI / 2);
+    canyonWater = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      color: 0x2a4a6e, transparent: true, opacity: 0.85
+    }));
+    canyonWater.position.set(0, cy.waterY, cy.z);
+    canyonWater.name = 'ef-canyon-water';
+    canyonBase = new Float32Array(geo.attributes.position.array);
+    scene.add(canyonWater);
+  }
+
   /* ===================== 9. BOOT + TICK ================================ */
 
   EF.bus.on('game:booted', function (p) {
@@ -1892,6 +2000,8 @@
 
     buildWater(scene);
     buildFlame(scene);
+    buildMountains(scene);   // [build-09] north range (merged)
+    buildCanyonWater(scene); // [build-09] canyon river
     buildScatter(scene);
 
     world.ready = true;
@@ -2269,14 +2379,14 @@
    * regions tagged by biome; if EF.world.biomeAt(x,z) exists later, enemies.js
    * can filter by live biome, otherwise it uses these static zones. Troll is
    * rare: a single instance with a wide, remote zone. */
+  /* [build-09] zones rescaled to the +/-200 world; counts up (still ONE
+   * InstancedMesh batch per type -- more instances, not more draw calls).
+   * The dark forest (east, ~x120) gets the higher-tier enemies for density. */
   var ROSTER = [
-    { type: 'wolf',     count: 6, biome: 'pineForest', zone: { cx: 0,   cz: -60, r: 90 } },
-    { type: 'skeleton', count: 4, biome: 'barrows',    zone: { cx: 60,  cz: -70, r: 55 } },
-    { type: 'bandit',   count: 3, biome: 'road',       zone: { cx: -50, cz: 20,  r: 70 } },
-    /* [build-03 integrator patch] old zone {cx:110, cz:-110, r:60} was centered
-     * on the exact corner of the 220x220 terrain mesh — the troll spawned off
-     * the map (playtest bug #1). Moved in-bounds; still the remote NE corner. */
-    { type: 'troll',    count: 1, biome: 'fellmoor',   zone: { cx: 80,  cz: -80, r: 24 } }
+    { type: 'wolf',     count: 8, biome: 'pineForest', zone: { cx: -30, cz: -70,  r: 110 } },
+    { type: 'skeleton', count: 6, biome: 'barrows',    zone: { cx: 80,  cz: -125, r: 80  } },
+    { type: 'bandit',   count: 5, biome: 'road',       zone: { cx: -95, cz: 55,   r: 95  } },
+    { type: 'troll',    count: 2, biome: 'darkforest', zone: { cx: 120, cz: -25,  r: 55  } }
   ];
 
   EF.data.enemyTypes = {
@@ -2969,6 +3079,9 @@
     var px = p ? p.x : 0, pz = p ? p.z : 0;
     _camQ.copy(EF.engine.camera.object.quaternion);
     var playerDead = EF.combat && EF.combat.isPlayerDead && EF.combat.isPlayerDead();
+    /* [build-09] enemies do not target the player while inside the village
+     * wall (buildings.js sets EF.village.playerSafe). They fall back to wander. */
+    var playerSafe = EF.village && EF.village.playerSafe;
 
     /* --- 1. AI + logical state, then bake each enemy's base world matrix --- */
     for (i = 0; i < pool.length; i++) {
@@ -2983,7 +3096,7 @@
         if (e.cooldownT > 0) e.cooldownT -= dt;
         var dx = px - e.x, dz = pz - e.z, d = Math.sqrt(dx * dx + dz * dz), moveMag = 0;
         if (e.state === 'attack') { updateAttack(e, dt, d); moveMag = 0; }
-        else if (!playerDead && d < e.def.aggro) {
+        else if (!playerDead && !playerSafe && d < e.def.aggro) {
           e.state = 'chase';
           switch (e.def.wrinkle) {
             case 'circle': moveMag = aiChaseWolf(e, dt, px, pz, d); break;
@@ -5859,7 +5972,7 @@
   console.log('[EF.map] ready — relief chart, POIs, quest pin, minimap (5 Hz)');
 })();
 </script>
-<!-- ================= buildings.js           build-08  (Integrator -- collision + spread village, LOADS LAST) ================= -->
+<!-- ================= buildings.js           build-09  (Integrator -- wall/lamps/paths + collision, LOADS LAST) ================= -->
 <script>
 /* ============================================================================
  * EMBERFELL -- integration/buildings.js  (Integrator feature module)
@@ -6361,6 +6474,140 @@
     return min === Infinity ? 0 : min;
   }
 
+  /* =====================================================================
+   * 9b. VILLAGE WALL / PATHS / LAMPS / SMOKE / CANYON / DETAILS  [build-09]
+   * ===================================================================== */
+  var WALL_R = 35, GATE_DEG = 90, GATE_HALF = 12; // gate faces +z (south, open world)
+  var lamps = [];                 // { light, base, on }
+  var smoke = null, smokeData = null;
+  EF.village = { playerSafe: false, cx: 0, cz: 10, r: WALL_R };
+  function angDiff(a, b) { return ((a - b) % 360 + 540) % 360 - 180; }
+  // box oriented so its FIRST dimension (length) lies along the chord (dx,dz)
+  function chordBox(acc, col, x0, z0, x1, z1, thick, yc, hgt) {
+    var mx = (x0 + x1) / 2, mz = (z0 + z1) / 2, dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz);
+    if (L < 0.05) return;
+    box(acc, col, mx, yc, mz, L, hgt, thick, Math.atan2(-dz, dx));
+  }
+
+  function buildWall(cx, cz) {
+    EF.village.cx = cx; EF.village.cz = cz; EF.village.r = WALL_R;
+    var stone = 0x7c7d84, stoneDk = 0x585962;
+    var segs = 48;
+    for (var i = 0; i < segs; i++) {
+      var a0 = i / segs * 360, a1 = (i + 1) / segs * 360, am = (a0 + a1) / 2;
+      if (Math.abs(angDiff(am, GATE_DEG)) < GATE_HALF) continue; // gate gap
+      var r0 = a0 * Math.PI / 180, r1 = a1 * Math.PI / 180, rm = am * Math.PI / 180;
+      var x0 = cx + Math.cos(r0) * WALL_R, z0 = cz + Math.sin(r0) * WALL_R;
+      var x1 = cx + Math.cos(r1) * WALL_R, z1 = cz + Math.sin(r1) * WALL_R;
+      var mx = cx + Math.cos(rm) * WALL_R, mz = cz + Math.sin(rm) * WALL_R;
+      var y = groundAt(mx, mz);
+      chordBox(_sa, stone, x0, z0, x1, z1, 1.1, y + 1.25, 2.5);       // wall body
+      chordBox(_sa, stoneDk, x0, z0, x1, z1, 1.2, y + 2.65, 0.5);     // battlement cap
+      // two merlons per segment (crenellation)
+      var mrx = cx + Math.cos((a0 + am) / 2 * Math.PI / 180) * WALL_R, mrz = cz + Math.sin((a0 + am) / 2 * Math.PI / 180) * WALL_R;
+      var mrx2 = cx + Math.cos((am + a1) / 2 * Math.PI / 180) * WALL_R, mrz2 = cz + Math.sin((am + a1) / 2 * Math.PI / 180) * WALL_R;
+      box(_sa, stone, mrx, y + 3.05, mrz, 0.7, 0.5, 0.7, rm);
+      box(_sa, stone, mrx2, y + 3.05, mrz2, 0.7, 0.5, 0.7, rm);
+      // beads at BOTH the segment midpoint and its start vertex: midpoints alone
+      // leave a thin radial gap on the E/W extremes (no sample lands on z=cz),
+      // so the start-vertex bead (one lands exactly at 0 deg and 180 deg) seals it.
+      collision.circle(mx, mz, 1.9, 'wall');
+      collision.circle(x0, z0, 1.9, 'wall'); // overlapping beads -> solid ring, gate open
+    }
+    // gate towers flanking the opening
+    for (var g = -1; g <= 1; g += 2) {
+      var ga = (GATE_DEG + g * (GATE_HALF + 2.5)) * Math.PI / 180;
+      var tx = cx + Math.cos(ga) * WALL_R, tz = cz + Math.sin(ga) * WALL_R, ty = groundAt(tx, tz);
+      box(_sa, stoneDk, tx, ty + 2.1, tz, 2.4, 4.2, 2.4, 0);
+      box(_sa, stone, tx, ty + 4.4, tz, 2.8, 0.5, 2.8, 0);
+      box(_sa, 0x3a3b42, tx, ty + 4.85, tz, 1.2, 0.6, 1.2, Math.PI / 4); // pinnacle
+      collision.circle(tx, tz, 1.5, 'gate');
+    }
+  }
+
+  /* dirt paths: dark-brown flat strips that hug the ground (#5C3D1E) */
+  function pathLine(pts, width) {
+    for (var i = 0; i < pts.length - 1; i++) {
+      var ax = pts[i][0], az = pts[i][1], bx = pts[i + 1][0], bz = pts[i + 1][1];
+      var L = Math.hypot(bx - ax, bz - az), steps = Math.max(1, Math.round(L / 3));
+      for (var s = 0; s < steps; s++) {
+        var t0 = s / steps, t1 = (s + 1) / steps;
+        var x0 = ax + (bx - ax) * t0, z0 = az + (bz - az) * t0;
+        var x1 = ax + (bx - ax) * t1, z1 = az + (bz - az) * t1;
+        var my = groundAt((x0 + x1) / 2, (z0 + z1) / 2);
+        chordBox(_sa, 0x5c3d1e, x0, z0, x1, z1, width, my + 0.05, 0.06);
+      }
+    }
+  }
+  function pathRing(cx, cz, r, width) {
+    var n = 28, prev = null;
+    for (var i = 0; i <= n; i++) {
+      var a = i / n * Math.PI * 2, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      if (prev) { var my = groundAt((prev[0] + x) / 2, (prev[1] + z) / 2); chordBox(_sa, 0x5c3d1e, prev[0], prev[1], x, z, width, my + 0.05, 0.06); }
+      prev = [x, z];
+    }
+  }
+
+  /* lamp post: shared merged geometry; only KEY posts carry a point light
+   * (total village point lights capped at 6: 2 interiors + up to 4 lamps). */
+  function lampPost(x, z, withLight) {
+    var y = groundAt(x, z);
+    box(_sa, 0x5a5b62, x, y + 0.2, z, 0.7, 0.4, 0.7, 0);      // stone base
+    box(_sa, 0x4a4b52, x, y + 1.5, z, 0.24, 2.6, 0.24, 0);    // post
+    box(_sa, 0x3a3b42, x, y + 2.9, z, 0.6, 0.5, 0.6, 0);      // lantern housing
+    box(_ga, 0xffb45a, x, y + 2.9, z, 0.34, 0.4, 0.34, 0);    // glowing pane (emissive)
+    box(_sa, 0x3a3b42, x, y + 3.25, z, 0.5, 0.24, 0.5, 0);    // cap
+    collision.circle(x, z, 0.5, 'lamp');
+    if (withLight && lamps.length < 4) {
+      var pl = new THREE.PointLight(0xff9a44, 0.0, 8, 2);
+      pl.position.set(x, y + 2.9, z);
+      if (EF.engine.scene) EF.engine.scene.add(pl);
+      lamps.push({ light: pl, base: 1.5, on: false });
+    }
+  }
+
+  function buildSmoke(x, y, z) {
+    var N = 26;
+    var pos = new Float32Array(N * 3);
+    smokeData = [];
+    for (var i = 0; i < N; i++) {
+      var d = { x: (Math.random() - 0.5) * 0.4, y: Math.random() * 4, z: (Math.random() - 0.5) * 0.4, sp: 0.5 + Math.random() * 0.7 };
+      smokeData.push(d);
+      pos[i * 3] = x + d.x; pos[i * 3 + 1] = y + d.y; pos[i * 3 + 2] = z + d.z;
+    }
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    smoke = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9a8a7a, size: 0.6, transparent: true, opacity: 0.5, sizeAttenuation: true, fog: true, depthWrite: false }));
+    smoke.name = 'ef-forge-smoke'; smoke._x = x; smoke._y = y; smoke._z = z; smoke._top = 4.5;
+    if (EF.engine.scene) EF.engine.scene.add(smoke);
+  }
+
+  function canyonColliders() {
+    var cy = EF.worldData && EF.worldData.terrain && EF.worldData.terrain.canyon;
+    if (!cy) return;
+    var half = (EF.worldData.terrain.size / 2) - 2;
+    for (var x = -half; x < half; x += 20) {
+      collision.box(x, x + 20, cy.z - 2.2, cy.z + 2.2, 'canyon'); // uncrossable barrier along the river
+    }
+  }
+
+  /* ---- small detail props (all merged into _sa) ---- */
+  function barrel(x, z) { var y = groundAt(x, z); box(_sa, 0x6b4a2b, x, y + 0.38, z, 0.62, 0.76, 0.62, 0); box(_sa, 0x4a3120, x, y + 0.44, z, 0.68, 0.12, 0.68, 0); box(_sa, 0x4a3120, x, y + 0.12, z, 0.68, 0.12, 0.68, 0); collision.circle(x, z, 0.45, 'prop'); }
+  function crate(x, z, ry) { var y = groundAt(x, z); box(_sa, 0x8a6a44, x, y + 0.32, z, 0.7, 0.64, 0.7, ry || 0.3); box(_sa, 0x6b4a2b, x, y + 0.32, z, 0.74, 0.12, 0.12, ry || 0.3); collision.circle(x, z, 0.5, 'prop'); }
+  function gardenPatch(x, z) {
+    var y = groundAt(x, z);
+    box(_sa, 0x4a3222, x, y + 0.04, z, 2.2, 0.08, 1.5, 0);   // tilled soil
+    for (var r = -1; r <= 1; r++) for (var c = -1; c <= 1; c++) box(_sa, 0x5f8a3c, x + c * 0.6, y + 0.2, z + r * 0.4, 0.18, 0.3, 0.18, 0); // sprouts
+  }
+  function hangingSign(x, z, faceDir, boardCol) {
+    var y = groundAt(x, z);
+    box(_sa, 0x3a2a1a, x, y + 1.4, z, 0.2, 2.8, 0.2, 0);            // post
+    box(_sa, 0x3a2a1a, x + faceDir * 0.7, y + 2.6, z, 1.6, 0.16, 0.16, 0); // arm
+    box(_sa, boardCol, x + faceDir * 1.3, y + 2.1, z, 1.1, 0.8, 0.08, 0);  // hanging board
+    box(_ga, 0xffcf7a, x + faceDir * 1.3, y + 2.1, z + 0.06, 0.7, 0.4, 0.02, 0); // painted emblem glow
+    collision.circle(x, z, 0.4, 'prop');
+  }
+
   bus.on('game:booted', function (p) {
     if (p && p.__selfTest) return;
     var scene = EF.engine.scene;
@@ -6386,20 +6633,34 @@
       doorW: 2.2, twoStory: true, porch: true, floorCol: COL.tavFloor, wallCol: COL.tavWall, beamCol: COL.tavBeam, roofCol: COL.tavRoof, interior: tavernInterior };
     tavern.door = doorSide(tavern.cx, tavern.cz);
     enclosed(tavern); mains.push(tavern);
+    // [build-09] tavern exterior character: hanging sign + barrels by the door (door faces -z)
+    hangingSign(tavern.cx - 3.4, tavern.cz - tavern.d / 2 - 0.4, 1, 0x6a3a24);
+    barrel(tavern.cx + 2.6, tavern.cz - tavern.d / 2 - 0.9);
+    barrel(tavern.cx + 3.5, tavern.cz - tavern.d / 2 - 0.6);
 
     var bs = ring(18);
     var black = { id: 'blacksmith', label: 'The Forge', cx: bs.x, cz: bs.z, w: 6.6, d: 6.4, wallH: 3.4, roofH: 2.0,
       floorCol: COL.bsFloor, wallCol: COL.bsWall, beamCol: COL.bsStone, roofCol: COL.bsRoof, interior: blacksmithInterior };
     black.open = doorSide(black.cx, black.cz);
     openFront(black); mains.push(black);
+    // [build-09] forge chimney smoke/ember particles
+    buildSmoke(black.cx + 2.0, black._y + black.wallH + 1.4, black.cz);
 
     var hutAngles = [162, 234, 306];
+    var hutRoofs = [0x6e4a30, 0x7d5232, 0x5a4638];   // [build-09] each cottage a different roof
+    var hutWalls = [0xb0a074, 0xa89a6a, 0xb8ac82];
     for (var h = 0; h < hutAngles.length; h++) {
       var hp = ring(hutAngles[h]);
       var hut = { id: 'hut' + (h + 1), label: 'Cottage', cx: hp.x, cz: hp.z, w: 4.5, d: 4.5, wallH: 2.8, roofH: 1.7,
-        doorW: 1.8, floorCol: COL.hutFloor, wallCol: COL.hutWall, beamCol: COL.hutBeam, roofCol: COL.hutRoof, interior: hutInterior };
+        doorW: 1.8, floorCol: COL.hutFloor, wallCol: hutWalls[h], beamCol: COL.hutBeam, roofCol: hutRoofs[h], interior: hutInterior };
       hut.door = doorSide(hut.cx, hut.cz);
       enclosed(hut); mains.push(hut);
+      // [build-09] a different prop outside each cottage, on the away-from-centre side
+      var ox = hut.cx - cx, oz = hut.cz - cz, ol = Math.hypot(ox, oz) || 1;
+      var sx = hut.cx + ox / ol * (hut.w / 2 + 1.3), sz = hut.cz + oz / ol * (hut.d / 2 + 1.3);
+      if (h === 0) barrel(sx, sz);
+      else if (h === 1) gardenPatch(sx, sz);
+      else crate(sx, sz, 0.4);
     }
 
     var stalls = [
@@ -6425,13 +6686,27 @@
     pushPoi('tavern', tavern.label, tavern.cx, tavern.cz, 4.6);
     pushPoi('blacksmith', black.label, black.cx, black.cz, 4.0);
 
+    /* [build-09] perimeter wall + gate, dirt paths, lamp posts, canyon barrier */
+    buildWall(cx, cz);
+    pathLine([[cx, cz + WALL_R - 1], [cx, cz]], 3.6);        // gate -> plaza
+    pathRing(cx, cz, R, 3.0);                                // ring connecting buildings
+    for (var mi = 0; mi < mains.length; mi++) pathLine([[cx, cz], [mains[mi].cx, mains[mi].cz]], 3.3); // plaza -> each building
+    var lampSpots = [
+      [cx, cz + WALL_R - 4.5, true], [cx, cz + 12, true], [cx + 16, cz + 2, true], [cx - 16, cz + 4, true],
+      [cx + 11, cz - 6, false], [cx - 11, cz - 6, false], [cx + 5, cz + WALL_R - 4.5, false], [cx - 5, cz + WALL_R - 4.5, false]
+    ];
+    for (var li = 0; li < lampSpots.length; li++) lampPost(lampSpots[li][0], lampSpots[li][1], lampSpots[li][2]);
+    canyonColliders();
+    pushPoi('gate', 'Village Gate', cx, cz + WALL_R, 3.0);
+
     var stat = endLambert(_sa, 'ef-buildings'); scene.add(stat);
     if (EF.world && EF.world.occluders) EF.world.occluders.push(stat);
     if (_ga.pos.length) { scene.add(endGlow(_ga, 'ef-building-glow')); }
 
     wrapNearest();
-    console.log('[EF.buildings] settlement: ' + enterables.length + ' enterable buildings, ' +
-      myNpcs.length + ' NPCs, ' + colliders.length + ' colliders, min main gap ' + spacingMin(mains).toFixed(1) + 'u');
+    console.log('[EF.buildings] settlement: ' + enterables.length + ' buildings, ' +
+      myNpcs.length + ' NPCs, ' + lamps.length + ' lamp lights, wall r' + WALL_R + ', ' +
+      colliders.length + ' colliders, min main gap ' + spacingMin(mains).toFixed(1) + 'u');
   });
 
   /* =====================================================================
@@ -6471,6 +6746,48 @@
     }
     for (i = 0; i < coals.length; i++) {
       var c = coals[i]; c.mesh.scale.setScalar(1 + 0.14 * Math.sin(elapsed * 9 + c.phase) + 0.07 * Math.sin(elapsed * 17));
+    }
+
+    /* [build-09] player safety: inside the wall, enemies do not target you */
+    if (pp) {
+      var vdx = pp.x - EF.village.cx, vdz = pp.z - EF.village.cz;
+      EF.village.playerSafe = (vdx * vdx + vdz * vdz) < (EF.village.r - 1.5) * (EF.village.r - 1.5);
+    }
+
+    /* [build-09] keep enemies OUTSIDE the wall (cheap circle exclusion; the
+     * gate is player-only). One check per enemy -- no wall-collider sweep. */
+    if (EF.enemies && EF.enemies.pool) {
+      var pool = EF.enemies.pool, R2 = EF.village.r + 1.0;
+      for (i = 0; i < pool.length; i++) {
+        var en = pool[i]; if (!en.alive) continue;
+        var ex = en.x - EF.village.cx, ez = en.z - EF.village.cz, ed = Math.sqrt(ex * ex + ez * ez);
+        if (ed < R2) {
+          if (ed < 1e-3) { ex = 1; ez = 0; ed = 1; } // degenerate: shove straight out
+          en.x = EF.village.cx + ex / ed * R2; en.z = EF.village.cz + ez / ed * R2;
+        }
+      }
+    }
+
+    /* [build-09] lamps: on at dusk/night, off at dawn/day; subtle flicker */
+    var phase = EF.world && EF.world.getTimePhase ? EF.world.getTimePhase() : 'day';
+    var lampsOn = (phase === 'dusk' || phase === 'night');
+    for (i = 0; i < lamps.length; i++) {
+      var lp = lamps[i];
+      var target = lampsOn ? lp.base * (0.88 + 0.12 * Math.sin(elapsed * 11 + i * 1.7) + 0.06 * Math.sin(elapsed * 23 + i)) : 0;
+      lp.light.intensity += (target - lp.light.intensity) * Math.min(1, dt * 6);
+    }
+
+    /* [build-09] forge smoke: rise + recycle */
+    if (smoke && smokeData) {
+      var arr = smoke.geometry.attributes.position.array;
+      for (i = 0; i < smokeData.length; i++) {
+        var sd = smokeData[i]; sd.y += sd.sp * dt;
+        if (sd.y > smoke._top) { sd.y = 0; sd.x = (Math.random() - 0.5) * 0.4; sd.z = (Math.random() - 0.5) * 0.4; }
+        arr[i * 3] = smoke._x + sd.x + Math.sin(elapsed * 0.8 + i) * 0.15 * (sd.y / smoke._top);
+        arr[i * 3 + 1] = smoke._y + sd.y;
+        arr[i * 3 + 2] = smoke._z + sd.z;
+      }
+      smoke.geometry.attributes.position.needsUpdate = true;
     }
   });
 
