@@ -12,6 +12,7 @@
 | build-06 | 4 | 2026-07-10 | Polish integration + herb-pickup fix verified by dept test (4/4); setPlayerObject seam glued (pickups + camera occlusion were dead in all prior builds); damage-number anchoring payload patched; CR-6 re-escalated (fix not delivered) |
 | build-07 | 5 | 2026-07-12 | Feature: `EF.engine.collision` registry (cylinder-vs-AABB/circle) resolving player + NPCs every tick; village expansion (tavern, blacksmith, 3 stalls + vendors, notice board, 4 new NPCs) all in `EF.world.pois`; enterable interiors via roof-reveal. Single integrator module, zero dept-file edits |
 | build-08 | 5 | 2026-07-12 | Spread-out settlement (req 7-12): buildings on a ring in a 60-unit clearing with 23.5u between them; ALL huts now enterable (world.js solid huts removed, rebuilt as enterable); large two-story tavern (3.2x hut, porch + windows), open-front blacksmith (2x hut); ground pads + door ramps so buildings sit level on rolling terrain and you walk in smoothly |
+| build-09 | 6 | 2026-07-12 | Fortified village + expanded world: crenellated stone wall (r35) with always-open south gate — solid collision, player-only gate, enemies clamped outside, `EF.village.playerSafe` disables enemy aggro inside; world grown ±110→±200 (merged mountain range, uncrossable canyon+river, dense dark forest); 10-min day/night (4 phases) with dusk/dawn lamp posts (≤4 point lights, cap 6 total); dirt paths; per-building visual variety. **Draw calls DOWN vs build-08** (~90 village / ~46 roam) via merged geometry + InstancedMesh scatter |
 
 ### Change requests (CR) — status
 
@@ -39,6 +40,78 @@
 | AR-5 | ⛔ open | Canonicalize/repoint UI ask-side events: `ui:menu`, `ui:start`, `ui:track`, `player:respawn` + Cycle 4 additions `journal:entry`, `dialogue:ambient` |
 | AR-6 | ⛔ open (new, build-06) | Ratify ONE `combat:damage` payload shape — combat ships `position:{x,y,z}`, UI assumed flat `{x,z,y}`; integrator patch accepts both |
 
+
+## build-09 (fortified village + expanded world) — 2026-07-12, Integrator/QA
+
+Requirements 1-7. Village-safety + collision work stays in
+`integration/buildings.js` (loads LAST, so its tick corrects player/enemy
+positions in the same frame). World-scale + day/night live in the department
+files (`World:/biomes.js`, `World:/world.js`, `Combat:/enemyTypes.js`,
+`Combat:/enemies.js`), each edit marked `[build-09]`.
+
+### Village wall + safe zone (req 1)
+- **Crenellated stone wall**, radius 35u, 2.5u tall, 48 segments with merlons,
+  battlement cap, and flanking gate towers. Merged into the single static
+  `ef-buildings` Lambert mesh (no new draw calls).
+- **South gate is always open** (a 24° gap facing +z, toward the open world) so
+  the player can always walk in/out. The gate is player-only.
+- **Solid collision** via overlapping circle "beads" on the ring. Beads sit at
+  BOTH each segment midpoint and its start vertex — midpoints alone leave a
+  thin radial gap on the exact E/W extremes (no sample lands on `z=cz`); the
+  vertex beads (one lands precisely at 0° and 180°) seal it. Verified: a player
+  pushing the west wall from outside stops at x≈-37 (wall at -35), no
+  phase-through; walking straight down the gate reaches the plaza.
+- **Enemies stay outside**: one cheap per-enemy circle clamp pushes any live
+  enemy back to r+1 each tick (no wall-collider sweep), with a degenerate-case
+  guard for an enemy exactly at centre. Verified: 6 enemies forced toward the
+  centre all end at exactly 36u out, 0 inside the wall.
+- **No aggro inside the wall**: `EF.village.playerSafe` (set when the player is
+  within r-1.5) gates the enemy aggro check in `enemies.js`. Verified true at
+  the plaza.
+
+### World expansion (req 2, 4) — no extra draw calls
+- Terrain grown from ±110 to **±200** (`terrain.size` 400, segments 180);
+  `EF.worldData.terrain.size === 400` verified. Fog re-tuned
+  (near 20→28, far 78→108 across the day) to hide the far edge.
+- **Northern mountain range**: 8 peaks, each a rock cone + snow cap + shoulder,
+  **all merged into ONE `ef-mountains` mesh** (not individual objects).
+- **Uncrossable canyon + river** carved along z≈-78 (`terrain.canyon`): the
+  ground sampler dips a steep-rimmed trench, an animated water plane
+  (`ef-canyon-water`) fills it, and AABB colliders line the rim as a hard
+  barrier between the south lands and the peaks.
+- **Dense dark forest** (east quadrant) + expanded scatter — all trees, rocks,
+  and tufts remain **InstancedMesh** batches (20 instanced batches counted in
+  the live scene), higher enemy density routed here in the rescaled roster.
+
+### Building variety (req 3)
+- Cottages vary roof + wall colour and each gets a barrel / crate / garden
+  patch; the tavern gains a hanging sign and barrels; the blacksmith gains a
+  chimney + a `Points`-based smoke plume (one draw call). Stall canopies and
+  goods already varied from build-08.
+
+### Day/night + lighting + paths (req 5, 6, 7)
+- **Day/night cycle extended 2min → 10min** (`dayLength` 240→600). Four phases
+  via `getTimePhase()` verified across the cycle: dawn → day → dusk → night
+  (night longer than day).
+- **Stone lamp posts** along the paths and gate, built from a **single shared
+  stone geometry** merged into the static mesh. Only 4 key posts carry a warm
+  orange `PointLight` (radius 8) — **total village point lights = 6** (2
+  interiors + 4 lamps), meeting the hard cap. Lamps auto-on at dusk/night,
+  off at dawn/day, with a subtle flicker; verified off in day, ramped up at
+  night, eased both ways.
+- **Dirt paths** (#5C3D1E flat strips that hug the ground): gate→plaza, a ring
+  around the plaza, and a spoke to each building.
+
+### §10 / regressions + performance
+- Clean + diag builds boot with **0 console errors**; engine selfTest 26/26.
+  Existing NPC (Maren) + the wolf quest loop verified intact; all 5 buildings
+  still hide/restore their roof on entry/exit.
+- **Draw calls went DOWN despite the bigger world**: ~90 looking across the
+  village vs build-08's ~110, and ~46 roaming (incl. the new dark forest) vs
+  ~47 — because every new structure (wall, lamps, paths, mountains) is merged
+  static geometry or InstancedMesh, and the far world is fogged/frustum-culled.
+
+---
 
 ## build-08 (spread-out settlement + all-enterable) — 2026-07-12, Integrator/QA
 

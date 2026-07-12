@@ -191,14 +191,14 @@
    * regions tagged by biome; if EF.world.biomeAt(x,z) exists later, enemies.js
    * can filter by live biome, otherwise it uses these static zones. Troll is
    * rare: a single instance with a wide, remote zone. */
+  /* [build-09] zones rescaled to the +/-200 world; counts up (still ONE
+   * InstancedMesh batch per type -- more instances, not more draw calls).
+   * The dark forest (east, ~x120) gets the higher-tier enemies for density. */
   var ROSTER = [
-    { type: 'wolf',     count: 6, biome: 'pineForest', zone: { cx: 0,   cz: -60, r: 90 } },
-    { type: 'skeleton', count: 4, biome: 'barrows',    zone: { cx: 60,  cz: -70, r: 55 } },
-    { type: 'bandit',   count: 3, biome: 'road',       zone: { cx: -50, cz: 20,  r: 70 } },
-    /* [build-03 integrator patch] old zone {cx:110, cz:-110, r:60} was centered
-     * on the exact corner of the 220x220 terrain mesh — the troll spawned off
-     * the map (playtest bug #1). Moved in-bounds; still the remote NE corner. */
-    { type: 'troll',    count: 1, biome: 'fellmoor',   zone: { cx: 80,  cz: -80, r: 24 } }
+    { type: 'wolf',     count: 8, biome: 'pineForest', zone: { cx: -30, cz: -70,  r: 110 } },
+    { type: 'skeleton', count: 6, biome: 'barrows',    zone: { cx: 80,  cz: -125, r: 80  } },
+    { type: 'bandit',   count: 5, biome: 'road',       zone: { cx: -95, cz: 55,   r: 95  } },
+    { type: 'troll',    count: 2, biome: 'darkforest', zone: { cx: 120, cz: -25,  r: 55  } }
   ];
 
   EF.data.enemyTypes = {

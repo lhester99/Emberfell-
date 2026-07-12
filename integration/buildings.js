@@ -498,6 +498,140 @@
     return min === Infinity ? 0 : min;
   }
 
+  /* =====================================================================
+   * 9b. VILLAGE WALL / PATHS / LAMPS / SMOKE / CANYON / DETAILS  [build-09]
+   * ===================================================================== */
+  var WALL_R = 35, GATE_DEG = 90, GATE_HALF = 12; // gate faces +z (south, open world)
+  var lamps = [];                 // { light, base, on }
+  var smoke = null, smokeData = null;
+  EF.village = { playerSafe: false, cx: 0, cz: 10, r: WALL_R };
+  function angDiff(a, b) { return ((a - b) % 360 + 540) % 360 - 180; }
+  // box oriented so its FIRST dimension (length) lies along the chord (dx,dz)
+  function chordBox(acc, col, x0, z0, x1, z1, thick, yc, hgt) {
+    var mx = (x0 + x1) / 2, mz = (z0 + z1) / 2, dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz);
+    if (L < 0.05) return;
+    box(acc, col, mx, yc, mz, L, hgt, thick, Math.atan2(-dz, dx));
+  }
+
+  function buildWall(cx, cz) {
+    EF.village.cx = cx; EF.village.cz = cz; EF.village.r = WALL_R;
+    var stone = 0x7c7d84, stoneDk = 0x585962;
+    var segs = 48;
+    for (var i = 0; i < segs; i++) {
+      var a0 = i / segs * 360, a1 = (i + 1) / segs * 360, am = (a0 + a1) / 2;
+      if (Math.abs(angDiff(am, GATE_DEG)) < GATE_HALF) continue; // gate gap
+      var r0 = a0 * Math.PI / 180, r1 = a1 * Math.PI / 180, rm = am * Math.PI / 180;
+      var x0 = cx + Math.cos(r0) * WALL_R, z0 = cz + Math.sin(r0) * WALL_R;
+      var x1 = cx + Math.cos(r1) * WALL_R, z1 = cz + Math.sin(r1) * WALL_R;
+      var mx = cx + Math.cos(rm) * WALL_R, mz = cz + Math.sin(rm) * WALL_R;
+      var y = groundAt(mx, mz);
+      chordBox(_sa, stone, x0, z0, x1, z1, 1.1, y + 1.25, 2.5);       // wall body
+      chordBox(_sa, stoneDk, x0, z0, x1, z1, 1.2, y + 2.65, 0.5);     // battlement cap
+      // two merlons per segment (crenellation)
+      var mrx = cx + Math.cos((a0 + am) / 2 * Math.PI / 180) * WALL_R, mrz = cz + Math.sin((a0 + am) / 2 * Math.PI / 180) * WALL_R;
+      var mrx2 = cx + Math.cos((am + a1) / 2 * Math.PI / 180) * WALL_R, mrz2 = cz + Math.sin((am + a1) / 2 * Math.PI / 180) * WALL_R;
+      box(_sa, stone, mrx, y + 3.05, mrz, 0.7, 0.5, 0.7, rm);
+      box(_sa, stone, mrx2, y + 3.05, mrz2, 0.7, 0.5, 0.7, rm);
+      // beads at BOTH the segment midpoint and its start vertex: midpoints alone
+      // leave a thin radial gap on the E/W extremes (no sample lands on z=cz),
+      // so the start-vertex bead (one lands exactly at 0 deg and 180 deg) seals it.
+      collision.circle(mx, mz, 1.9, 'wall');
+      collision.circle(x0, z0, 1.9, 'wall'); // overlapping beads -> solid ring, gate open
+    }
+    // gate towers flanking the opening
+    for (var g = -1; g <= 1; g += 2) {
+      var ga = (GATE_DEG + g * (GATE_HALF + 2.5)) * Math.PI / 180;
+      var tx = cx + Math.cos(ga) * WALL_R, tz = cz + Math.sin(ga) * WALL_R, ty = groundAt(tx, tz);
+      box(_sa, stoneDk, tx, ty + 2.1, tz, 2.4, 4.2, 2.4, 0);
+      box(_sa, stone, tx, ty + 4.4, tz, 2.8, 0.5, 2.8, 0);
+      box(_sa, 0x3a3b42, tx, ty + 4.85, tz, 1.2, 0.6, 1.2, Math.PI / 4); // pinnacle
+      collision.circle(tx, tz, 1.5, 'gate');
+    }
+  }
+
+  /* dirt paths: dark-brown flat strips that hug the ground (#5C3D1E) */
+  function pathLine(pts, width) {
+    for (var i = 0; i < pts.length - 1; i++) {
+      var ax = pts[i][0], az = pts[i][1], bx = pts[i + 1][0], bz = pts[i + 1][1];
+      var L = Math.hypot(bx - ax, bz - az), steps = Math.max(1, Math.round(L / 3));
+      for (var s = 0; s < steps; s++) {
+        var t0 = s / steps, t1 = (s + 1) / steps;
+        var x0 = ax + (bx - ax) * t0, z0 = az + (bz - az) * t0;
+        var x1 = ax + (bx - ax) * t1, z1 = az + (bz - az) * t1;
+        var my = groundAt((x0 + x1) / 2, (z0 + z1) / 2);
+        chordBox(_sa, 0x5c3d1e, x0, z0, x1, z1, width, my + 0.05, 0.06);
+      }
+    }
+  }
+  function pathRing(cx, cz, r, width) {
+    var n = 28, prev = null;
+    for (var i = 0; i <= n; i++) {
+      var a = i / n * Math.PI * 2, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      if (prev) { var my = groundAt((prev[0] + x) / 2, (prev[1] + z) / 2); chordBox(_sa, 0x5c3d1e, prev[0], prev[1], x, z, width, my + 0.05, 0.06); }
+      prev = [x, z];
+    }
+  }
+
+  /* lamp post: shared merged geometry; only KEY posts carry a point light
+   * (total village point lights capped at 6: 2 interiors + up to 4 lamps). */
+  function lampPost(x, z, withLight) {
+    var y = groundAt(x, z);
+    box(_sa, 0x5a5b62, x, y + 0.2, z, 0.7, 0.4, 0.7, 0);      // stone base
+    box(_sa, 0x4a4b52, x, y + 1.5, z, 0.24, 2.6, 0.24, 0);    // post
+    box(_sa, 0x3a3b42, x, y + 2.9, z, 0.6, 0.5, 0.6, 0);      // lantern housing
+    box(_ga, 0xffb45a, x, y + 2.9, z, 0.34, 0.4, 0.34, 0);    // glowing pane (emissive)
+    box(_sa, 0x3a3b42, x, y + 3.25, z, 0.5, 0.24, 0.5, 0);    // cap
+    collision.circle(x, z, 0.5, 'lamp');
+    if (withLight && lamps.length < 4) {
+      var pl = new THREE.PointLight(0xff9a44, 0.0, 8, 2);
+      pl.position.set(x, y + 2.9, z);
+      if (EF.engine.scene) EF.engine.scene.add(pl);
+      lamps.push({ light: pl, base: 1.5, on: false });
+    }
+  }
+
+  function buildSmoke(x, y, z) {
+    var N = 26;
+    var pos = new Float32Array(N * 3);
+    smokeData = [];
+    for (var i = 0; i < N; i++) {
+      var d = { x: (Math.random() - 0.5) * 0.4, y: Math.random() * 4, z: (Math.random() - 0.5) * 0.4, sp: 0.5 + Math.random() * 0.7 };
+      smokeData.push(d);
+      pos[i * 3] = x + d.x; pos[i * 3 + 1] = y + d.y; pos[i * 3 + 2] = z + d.z;
+    }
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    smoke = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9a8a7a, size: 0.6, transparent: true, opacity: 0.5, sizeAttenuation: true, fog: true, depthWrite: false }));
+    smoke.name = 'ef-forge-smoke'; smoke._x = x; smoke._y = y; smoke._z = z; smoke._top = 4.5;
+    if (EF.engine.scene) EF.engine.scene.add(smoke);
+  }
+
+  function canyonColliders() {
+    var cy = EF.worldData && EF.worldData.terrain && EF.worldData.terrain.canyon;
+    if (!cy) return;
+    var half = (EF.worldData.terrain.size / 2) - 2;
+    for (var x = -half; x < half; x += 20) {
+      collision.box(x, x + 20, cy.z - 2.2, cy.z + 2.2, 'canyon'); // uncrossable barrier along the river
+    }
+  }
+
+  /* ---- small detail props (all merged into _sa) ---- */
+  function barrel(x, z) { var y = groundAt(x, z); box(_sa, 0x6b4a2b, x, y + 0.38, z, 0.62, 0.76, 0.62, 0); box(_sa, 0x4a3120, x, y + 0.44, z, 0.68, 0.12, 0.68, 0); box(_sa, 0x4a3120, x, y + 0.12, z, 0.68, 0.12, 0.68, 0); collision.circle(x, z, 0.45, 'prop'); }
+  function crate(x, z, ry) { var y = groundAt(x, z); box(_sa, 0x8a6a44, x, y + 0.32, z, 0.7, 0.64, 0.7, ry || 0.3); box(_sa, 0x6b4a2b, x, y + 0.32, z, 0.74, 0.12, 0.12, ry || 0.3); collision.circle(x, z, 0.5, 'prop'); }
+  function gardenPatch(x, z) {
+    var y = groundAt(x, z);
+    box(_sa, 0x4a3222, x, y + 0.04, z, 2.2, 0.08, 1.5, 0);   // tilled soil
+    for (var r = -1; r <= 1; r++) for (var c = -1; c <= 1; c++) box(_sa, 0x5f8a3c, x + c * 0.6, y + 0.2, z + r * 0.4, 0.18, 0.3, 0.18, 0); // sprouts
+  }
+  function hangingSign(x, z, faceDir, boardCol) {
+    var y = groundAt(x, z);
+    box(_sa, 0x3a2a1a, x, y + 1.4, z, 0.2, 2.8, 0.2, 0);            // post
+    box(_sa, 0x3a2a1a, x + faceDir * 0.7, y + 2.6, z, 1.6, 0.16, 0.16, 0); // arm
+    box(_sa, boardCol, x + faceDir * 1.3, y + 2.1, z, 1.1, 0.8, 0.08, 0);  // hanging board
+    box(_ga, 0xffcf7a, x + faceDir * 1.3, y + 2.1, z + 0.06, 0.7, 0.4, 0.02, 0); // painted emblem glow
+    collision.circle(x, z, 0.4, 'prop');
+  }
+
   bus.on('game:booted', function (p) {
     if (p && p.__selfTest) return;
     var scene = EF.engine.scene;
@@ -523,20 +657,34 @@
       doorW: 2.2, twoStory: true, porch: true, floorCol: COL.tavFloor, wallCol: COL.tavWall, beamCol: COL.tavBeam, roofCol: COL.tavRoof, interior: tavernInterior };
     tavern.door = doorSide(tavern.cx, tavern.cz);
     enclosed(tavern); mains.push(tavern);
+    // [build-09] tavern exterior character: hanging sign + barrels by the door (door faces -z)
+    hangingSign(tavern.cx - 3.4, tavern.cz - tavern.d / 2 - 0.4, 1, 0x6a3a24);
+    barrel(tavern.cx + 2.6, tavern.cz - tavern.d / 2 - 0.9);
+    barrel(tavern.cx + 3.5, tavern.cz - tavern.d / 2 - 0.6);
 
     var bs = ring(18);
     var black = { id: 'blacksmith', label: 'The Forge', cx: bs.x, cz: bs.z, w: 6.6, d: 6.4, wallH: 3.4, roofH: 2.0,
       floorCol: COL.bsFloor, wallCol: COL.bsWall, beamCol: COL.bsStone, roofCol: COL.bsRoof, interior: blacksmithInterior };
     black.open = doorSide(black.cx, black.cz);
     openFront(black); mains.push(black);
+    // [build-09] forge chimney smoke/ember particles
+    buildSmoke(black.cx + 2.0, black._y + black.wallH + 1.4, black.cz);
 
     var hutAngles = [162, 234, 306];
+    var hutRoofs = [0x6e4a30, 0x7d5232, 0x5a4638];   // [build-09] each cottage a different roof
+    var hutWalls = [0xb0a074, 0xa89a6a, 0xb8ac82];
     for (var h = 0; h < hutAngles.length; h++) {
       var hp = ring(hutAngles[h]);
       var hut = { id: 'hut' + (h + 1), label: 'Cottage', cx: hp.x, cz: hp.z, w: 4.5, d: 4.5, wallH: 2.8, roofH: 1.7,
-        doorW: 1.8, floorCol: COL.hutFloor, wallCol: COL.hutWall, beamCol: COL.hutBeam, roofCol: COL.hutRoof, interior: hutInterior };
+        doorW: 1.8, floorCol: COL.hutFloor, wallCol: hutWalls[h], beamCol: COL.hutBeam, roofCol: hutRoofs[h], interior: hutInterior };
       hut.door = doorSide(hut.cx, hut.cz);
       enclosed(hut); mains.push(hut);
+      // [build-09] a different prop outside each cottage, on the away-from-centre side
+      var ox = hut.cx - cx, oz = hut.cz - cz, ol = Math.hypot(ox, oz) || 1;
+      var sx = hut.cx + ox / ol * (hut.w / 2 + 1.3), sz = hut.cz + oz / ol * (hut.d / 2 + 1.3);
+      if (h === 0) barrel(sx, sz);
+      else if (h === 1) gardenPatch(sx, sz);
+      else crate(sx, sz, 0.4);
     }
 
     var stalls = [
@@ -562,13 +710,27 @@
     pushPoi('tavern', tavern.label, tavern.cx, tavern.cz, 4.6);
     pushPoi('blacksmith', black.label, black.cx, black.cz, 4.0);
 
+    /* [build-09] perimeter wall + gate, dirt paths, lamp posts, canyon barrier */
+    buildWall(cx, cz);
+    pathLine([[cx, cz + WALL_R - 1], [cx, cz]], 3.6);        // gate -> plaza
+    pathRing(cx, cz, R, 3.0);                                // ring connecting buildings
+    for (var mi = 0; mi < mains.length; mi++) pathLine([[cx, cz], [mains[mi].cx, mains[mi].cz]], 3.3); // plaza -> each building
+    var lampSpots = [
+      [cx, cz + WALL_R - 4.5, true], [cx, cz + 12, true], [cx + 16, cz + 2, true], [cx - 16, cz + 4, true],
+      [cx + 11, cz - 6, false], [cx - 11, cz - 6, false], [cx + 5, cz + WALL_R - 4.5, false], [cx - 5, cz + WALL_R - 4.5, false]
+    ];
+    for (var li = 0; li < lampSpots.length; li++) lampPost(lampSpots[li][0], lampSpots[li][1], lampSpots[li][2]);
+    canyonColliders();
+    pushPoi('gate', 'Village Gate', cx, cz + WALL_R, 3.0);
+
     var stat = endLambert(_sa, 'ef-buildings'); scene.add(stat);
     if (EF.world && EF.world.occluders) EF.world.occluders.push(stat);
     if (_ga.pos.length) { scene.add(endGlow(_ga, 'ef-building-glow')); }
 
     wrapNearest();
-    console.log('[EF.buildings] settlement: ' + enterables.length + ' enterable buildings, ' +
-      myNpcs.length + ' NPCs, ' + colliders.length + ' colliders, min main gap ' + spacingMin(mains).toFixed(1) + 'u');
+    console.log('[EF.buildings] settlement: ' + enterables.length + ' buildings, ' +
+      myNpcs.length + ' NPCs, ' + lamps.length + ' lamp lights, wall r' + WALL_R + ', ' +
+      colliders.length + ' colliders, min main gap ' + spacingMin(mains).toFixed(1) + 'u');
   });
 
   /* =====================================================================
@@ -608,6 +770,48 @@
     }
     for (i = 0; i < coals.length; i++) {
       var c = coals[i]; c.mesh.scale.setScalar(1 + 0.14 * Math.sin(elapsed * 9 + c.phase) + 0.07 * Math.sin(elapsed * 17));
+    }
+
+    /* [build-09] player safety: inside the wall, enemies do not target you */
+    if (pp) {
+      var vdx = pp.x - EF.village.cx, vdz = pp.z - EF.village.cz;
+      EF.village.playerSafe = (vdx * vdx + vdz * vdz) < (EF.village.r - 1.5) * (EF.village.r - 1.5);
+    }
+
+    /* [build-09] keep enemies OUTSIDE the wall (cheap circle exclusion; the
+     * gate is player-only). One check per enemy -- no wall-collider sweep. */
+    if (EF.enemies && EF.enemies.pool) {
+      var pool = EF.enemies.pool, R2 = EF.village.r + 1.0;
+      for (i = 0; i < pool.length; i++) {
+        var en = pool[i]; if (!en.alive) continue;
+        var ex = en.x - EF.village.cx, ez = en.z - EF.village.cz, ed = Math.sqrt(ex * ex + ez * ez);
+        if (ed < R2) {
+          if (ed < 1e-3) { ex = 1; ez = 0; ed = 1; } // degenerate: shove straight out
+          en.x = EF.village.cx + ex / ed * R2; en.z = EF.village.cz + ez / ed * R2;
+        }
+      }
+    }
+
+    /* [build-09] lamps: on at dusk/night, off at dawn/day; subtle flicker */
+    var phase = EF.world && EF.world.getTimePhase ? EF.world.getTimePhase() : 'day';
+    var lampsOn = (phase === 'dusk' || phase === 'night');
+    for (i = 0; i < lamps.length; i++) {
+      var lp = lamps[i];
+      var target = lampsOn ? lp.base * (0.88 + 0.12 * Math.sin(elapsed * 11 + i * 1.7) + 0.06 * Math.sin(elapsed * 23 + i)) : 0;
+      lp.light.intensity += (target - lp.light.intensity) * Math.min(1, dt * 6);
+    }
+
+    /* [build-09] forge smoke: rise + recycle */
+    if (smoke && smokeData) {
+      var arr = smoke.geometry.attributes.position.array;
+      for (i = 0; i < smokeData.length; i++) {
+        var sd = smokeData[i]; sd.y += sd.sp * dt;
+        if (sd.y > smoke._top) { sd.y = 0; sd.x = (Math.random() - 0.5) * 0.4; sd.z = (Math.random() - 0.5) * 0.4; }
+        arr[i * 3] = smoke._x + sd.x + Math.sin(elapsed * 0.8 + i) * 0.15 * (sd.y / smoke._top);
+        arr[i * 3 + 1] = smoke._y + sd.y;
+        arr[i * 3 + 2] = smoke._z + sd.z;
+      }
+      smoke.geometry.attributes.position.needsUpdate = true;
     }
   });
 

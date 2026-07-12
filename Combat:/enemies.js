@@ -334,6 +334,9 @@
     var px = p ? p.x : 0, pz = p ? p.z : 0;
     _camQ.copy(EF.engine.camera.object.quaternion);
     var playerDead = EF.combat && EF.combat.isPlayerDead && EF.combat.isPlayerDead();
+    /* [build-09] enemies do not target the player while inside the village
+     * wall (buildings.js sets EF.village.playerSafe). They fall back to wander. */
+    var playerSafe = EF.village && EF.village.playerSafe;
 
     /* --- 1. AI + logical state, then bake each enemy's base world matrix --- */
     for (i = 0; i < pool.length; i++) {
@@ -348,7 +351,7 @@
         if (e.cooldownT > 0) e.cooldownT -= dt;
         var dx = px - e.x, dz = pz - e.z, d = Math.sqrt(dx * dx + dz * dz), moveMag = 0;
         if (e.state === 'attack') { updateAttack(e, dt, d); moveMag = 0; }
-        else if (!playerDead && d < e.def.aggro) {
+        else if (!playerDead && !playerSafe && d < e.def.aggro) {
           e.state = 'chase';
           switch (e.def.wrinkle) {
             case 'circle': moveMag = aiChaseWolf(e, dt, px, pz, d); break;
