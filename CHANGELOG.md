@@ -10,6 +10,7 @@
 | build-04 | 3 | 2026-07-10 | Quests & NPCs integrated (6 quests, 5 NPCs); Combat CR-5 enemy batching (16 fixed calls, CR-5 closed); UI missing → temp UI shim; CR-6 (NPC meshes 99/60) + CR-7 (rewards uncredited) filed |
 | build-05 | 3 | 2026-07-10 | UI/UX integrated (HUD, panels, dialogue, map+minimap, death/title); EF.state adapter glue; 5 UI bugs patched (map unclosable, 4× map scale, death-under-map, payload/field mismatches) |
 | build-06 | 4 | 2026-07-10 | Polish integration + herb-pickup fix verified by dept test (4/4); setPlayerObject seam glued (pickups + camera occlusion were dead in all prior builds); damage-number anchoring payload patched; CR-6 re-escalated (fix not delivered) |
+| build-07 | 5 | 2026-07-12 | Feature: `EF.engine.collision` registry (cylinder-vs-AABB/circle) resolving player + NPCs every tick; village expansion (tavern, blacksmith, 3 stalls + vendors, notice board, 4 new NPCs) all in `EF.world.pois`; enterable interiors via roof-reveal. Single integrator module, zero dept-file edits |
 
 ### Change requests (CR) — status
 
@@ -23,6 +24,7 @@
 | CR-6 | Quests/NPCs + Combat | ⛔ OPEN — **Cycle 5 blocker, re-escalated build-06** | Draw budget: 5 NPC humanoids = 67 meshes, player rig = 21 → village night fire 99/60. Claimed fixed in Cycle 4; **no fix present in delivered code** (enemies.js/combat.js byte-identical to Cycle 3, npcs.js has no batching). Apply the CR-5 merge/instancing pattern |
 | CR-7 | Quests + Combat | ⛔ open | Quest rewards announced, never credited (no module reads `questData[id].reward` on quest:completed; Combat is the stats authority — `gainXp` already public) |
 | CR-8 | Combat | ⛔ open (glued by integrator) | `EF.world.setPlayerObject` never called from the spawn path ("Combat: call this" since Cycle 2) — pickup collection and Cycle 4 camera occlusion were dead in every integrated build until adapter glue in build-06 |
+| CR-9 | Engine | 📋 open (new, build-07) | `EF.engine.collision` registry currently lives in the integrator `buildings.js`; it is an engine-level primitive (like the ground sampler) and should migrate into engine.js so all departments can register footprints. Collider volumes are intentionally thicker than visual walls (0.84 m) to prevent tunneling at the engine's clamped 0.05 s dt |
 
 ### Amendment requests (AR) — status
 
@@ -36,6 +38,75 @@
 | AR-5 | ⛔ open | Canonicalize/repoint UI ask-side events: `ui:menu`, `ui:start`, `ui:track`, `player:respawn` + Cycle 4 additions `journal:entry`, `dialogue:ambient` |
 | AR-6 | ⛔ open (new, build-06) | Ratify ONE `combat:damage` payload shape — combat ships `position:{x,y,z}`, UI assumed flat `{x,z,y}`; integrator patch accepts both |
 
+
+## build-07 (collision + village expansion) — 2026-07-12, Integrator/QA
+
+**Deliverables:** `build-07.html`, `build-07-diag.html`, `index.html` (= clean).
+One new self-contained module, `integration/buildings.js` (loads LAST), with
+**zero edits to any department file** — deliberate, given five cycles of
+upload-over regressions.
+
+### 1. Collision — `EF.engine.collision`
+
+New engine-level registry: `register/box/circle/resolve/clear`, holding
+axis-aligned box and circle colliders. `resolve(x,z,r)` pushes a cylinder out
+of every collider (closest-point ejection for boxes, radial for circles, two
+relaxation passes for clean corners; allocation-free via a reused out-pair).
+The module's tick handler runs LAST, so after player.js and npcs.js have moved
+it corrects `EF.player.position` (+ root) and every `EF.npcs._npcs` group in
+the same frame, before the engine's camera update. Existing huts, well, and
+fire pit are registered as circle colliders (recomputed from the village POI,
+matching world.js's `buildVillage` layout); all new building walls/props as
+boxes. **Collider volumes are 0.84 m thick vs the 0.3 m visual wall** — at the
+engine's clamped 0.05 s dt a run step is ~0.37 m, so a thin visual wall would
+tunnel; the fat collider is caught every frame. Verified headless: player
+driven into a hut and into a tavern wall is held outside (no tunnel); door
+gaps and interior props (hearth, anvil, bar, tables) all resolve.
+
+### 2. Village expansion — all in `EF.world.pois`, all with collision
+
+- **Tavern** (hollow, enterable, warm interior PointLight + hearth glow) with
+  **Bram** behind the bar; interior has two tables + stools, a bar counter,
+  and a stone fireplace.
+- **Blacksmith** (hollow, enterable, forge PointLight + coal glow) with a
+  forge block, anvil on a stump, and a tool rack.
+- **Three market stalls** (posts + counter + awning + goods) with vendors
+  **Sella**, **Tomas**, **Wend**.
+- **Notice board** near the village centre.
+- New POIs: `tavern`, `blacksmith`, `market`, `notice` — they also appear on
+  the map/minimap (map.js draws `EF.world.pois`).
+
+### 3. Enterable interiors — roof-reveal layer
+
+Buildings are hollow with a real door gap in **both** geometry and collision.
+Stepping inside the footprint hides that building's separate roof mesh so the
+third-person camera sees in, and the roof/walls are pushed to
+`EF.world.occluders` so the existing camera-occlusion pulls the view past
+walls. Interior warm light brightens on entry; an "Entered …" toast fires
+once. NPCs inside (Bram) are naturally visible and interactable. Verified:
+walk through the tavern door → inside footprint, roof hidden, toast fired,
+Bram's dialogue opens through the real UI.
+
+### NPCs without blowing the budget
+
+The 4 new NPCs each render as ONE merged vertex-colored mesh (the CR-5/CR-6
+pattern) = 4 draw calls total, animated as a whole (idle bob + face-player
+turn). They're interactable through the existing system via a `nearest()`
+wrap + dialogue injected into `EF.dialogue.npc` — **npcs.js is not edited**,
+and existing NPCs (Maren et al.) and the full quest loop are verified intact.
+
+### §10 spot-check
+
+- Zero console errors (clean + diag); ASCII-clean; console.log/warn/error
+  only; no `<style>`; no private rAF; per-tick work is number math + reused
+  scratch. Draw budget: **roaming unchanged at 45**; **village day ~90** (was
+  73) from +1 merged buildings mesh, +2 roofs, +2 glows, +4 NPC meshes. Still
+  over the 60 target — CR-6 (dept NPC/player batching) remains the lever;
+  this feature added its content at the minimum possible cost.
+- New non-canonical events already in the AR-5 set; CR-9 filed to migrate the
+  collision registry into engine.js.
+
+---
 
 ## build-06 (Cycle 4 polish + bug fixes) — 2026-07-10, Integrator/QA
 
