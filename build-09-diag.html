@@ -6478,6 +6478,7 @@
    * 9b. VILLAGE WALL / PATHS / LAMPS / SMOKE / CANYON / DETAILS  [build-09]
    * ===================================================================== */
   var WALL_R = 35, GATE_DEG = 90, GATE_HALF = 12; // gate faces +z (south, open world)
+  var BRIDGE = { x: 0, halfW: 3.2, gap: 5.0 }; // [build-10] canyon crossing at x=0
   var lamps = [];                 // { light, base, on }
   var smoke = null, smokeData = null;
   EF.village = { playerSafe: false, cx: 0, cz: 10, r: WALL_R };
@@ -6586,8 +6587,81 @@
     var cy = EF.worldData && EF.worldData.terrain && EF.worldData.terrain.canyon;
     if (!cy) return;
     var half = (EF.worldData.terrain.size / 2) - 2;
+    // uncrossable barrier along the river -- EXCEPT a gap at the bridge (x=0)
+    var gx0 = BRIDGE.x - BRIDGE.gap, gx1 = BRIDGE.x + BRIDGE.gap;
     for (var x = -half; x < half; x += 20) {
-      collision.box(x, x + 20, cy.z - 2.2, cy.z + 2.2, 'canyon'); // uncrossable barrier along the river
+      var x1 = x + 20;
+      if (x1 <= gx0 || x >= gx1) { collision.box(x, x1, cy.z - 2.2, cy.z + 2.2, 'canyon'); continue; }
+      if (x < gx0) collision.box(x, gx0, cy.z - 2.2, cy.z + 2.2, 'canyon');   // west of gap
+      if (x1 > gx1) collision.box(gx1, x1, cy.z - 2.2, cy.z + 2.2, 'canyon'); // east of gap
+    }
+  }
+
+  /* [build-10] BRIDGE across the canyon: a flat plank deck at rim height, a
+   * walkable pad (so you cross on the deck instead of dropping into the trench)
+   * with ramps up onto it at each end, support piers into the chasm, and railed
+   * sides with collision so you can't fall off. The barrier gap above lets the
+   * player through here (and only here). */
+  function buildBridge() {
+    var cy = EF.worldData && EF.worldData.terrain && EF.worldData.terrain.canyon;
+    if (!cy) return;
+    var bx = BRIDGE.x, hw = BRIDGE.halfW;
+    var reach = cy.halfWidth + cy.rim;                 // solid ground beyond the rim
+    var sZ = cy.z + reach, nZ = cy.z - reach;          // south / north rim edges
+    var sY = baseGround(bx, sZ), nY = baseGround(bx, nZ);
+    var deckY = Math.max(sY, nY) + 0.5;                // flat deck, just above the higher rim
+    var sDeck = cy.z + (cy.halfWidth + 5);             // deck ends a little onto each rim
+    var nDeck = cy.z - (cy.halfWidth + 5);
+    var wood = 0x6b4a2b, woodDk = 0x4a3120, post = 0x3a2a1c;
+
+    // walkable pad over the whole deck (flat at deckY) + ramps up at each end
+    pads.push({ minX: bx - hw - 0.3, maxX: bx + hw + 0.3, minZ: nDeck, maxZ: sDeck, y: deckY, minY: Math.min(sY, nY) });
+    var rampD = 6.5;
+    ramps.push({ minX: bx - hw - 0.3, maxX: bx + hw + 0.3, minZ: sDeck, maxZ: sDeck + rampD, axis: 'z', edge: sDeck, dir: 1, depth: rampD, padY: deckY });
+    ramps.push({ minX: bx - hw - 0.3, maxX: bx + hw + 0.3, minZ: nDeck - rampD, maxZ: nDeck, axis: 'z', edge: nDeck, dir: -1, depth: rampD, padY: deckY });
+
+    // deck: plank surface + edge beams
+    var deckLen = sDeck - nDeck, midZ = (sDeck + nDeck) / 2;
+    box(_sa, wood, bx, deckY, midZ, hw * 2, 0.22, deckLen, 0);
+    box(_sa, woodDk, bx - hw, deckY + 0.05, midZ, 0.18, 0.32, deckLen, 0); // side beams
+    box(_sa, woodDk, bx + hw, deckY + 0.05, midZ, 0.18, 0.32, deckLen, 0);
+    // plank ridges across the deck (visual)
+    var planks = Math.round(deckLen / 1.2);
+    for (var pi = 0; pi <= planks; pi++) {
+      var pz = nDeck + pi / planks * deckLen;
+      box(_sa, woodDk, bx, deckY + 0.13, pz, hw * 2, 0.05, 0.14, 0);
+    }
+    // railings: posts + top rail down each side (with collision so you can't fall off)
+    var rails = Math.round(deckLen / 2.4);
+    for (var ri = 0; ri <= rails; ri++) {
+      var rz = nDeck + ri / rails * deckLen;
+      box(_sa, post, bx - hw, deckY + 0.6, rz, 0.16, 1.2, 0.16, 0);
+      box(_sa, post, bx + hw, deckY + 0.6, rz, 0.16, 1.2, 0.16, 0);
+    }
+    box(_sa, wood, bx - hw, deckY + 1.15, midZ, 0.14, 0.16, deckLen, 0); // top rail W
+    box(_sa, wood, bx + hw, deckY + 1.15, midZ, 0.14, 0.16, deckLen, 0); // top rail E
+    // rails solid via THICK boxes just outside each edge: a thick collider
+    // always ejects the player back toward the deck (nearest face), so you
+    // can't tunnel or get rolled off the side into the canyon. Spans a little
+    // past the deck ends so you can't slip around the rail either.
+    collision.box(bx - hw - 3.0, bx - hw + 0.2, nDeck - 1, sDeck + 1, 'bridge'); // W rail
+    collision.box(bx + hw - 0.2, bx + hw + 3.0, nDeck - 1, sDeck + 1, 'bridge'); // E rail
+
+    // support piers dropping into the chasm at the two crossings of the deep water
+    for (var g = -1; g <= 1; g += 2) {
+      var gz = cy.z + g * cy.halfWidth * 0.6;
+      box(_sa, post, bx - hw + 0.3, (deckY + cy.waterY) / 2, gz, 0.4, deckY - cy.waterY, 0.4, 0);
+      box(_sa, post, bx + hw - 0.3, (deckY + cy.waterY) / 2, gz, 0.4, deckY - cy.waterY, 0.4, 0);
+      box(_sa, woodDk, bx, deckY - 0.2, gz, hw * 2 + 0.2, 0.3, 0.5, 0); // cross brace
+    }
+    // earthen ramp wedges so the deck ends meet the ground (no float at the lip)
+    for (var e = 0; e < 2; e++) {
+      var edgeZ = e === 0 ? sDeck : nDeck, dir = e === 0 ? 1 : -1;
+      var gy = baseGround(bx, edgeZ + dir * rampD);
+      for (var s = 0; s < 3; s++) {
+        var f = (s + 0.5) / 3;
+        box(_sa, COL.foundation, bx, (deckY * (1 - f) + gy * f) - 0.15, edgeZ + dir * rampD * f, hw * 2 + 0.3, 0.5, rampD / 3 + 0.15, 0);
+      }
     }
   }
 
@@ -6696,7 +6770,13 @@
       [cx + 11, cz - 6, false], [cx - 11, cz - 6, false], [cx + 5, cz + WALL_R - 4.5, false], [cx - 5, cz + WALL_R - 4.5, false]
     ];
     for (var li = 0; li < lampSpots.length; li++) lampPost(lampSpots[li][0], lampSpots[li][1], lampSpots[li][2]);
+    buildBridge();          // [build-10] canyon crossing (opens a gap in the barrier below)
     canyonColliders();
+    var _cy = EF.worldData && EF.worldData.terrain && EF.worldData.terrain.canyon;
+    if (_cy) {
+      pathLine([[BRIDGE.x, _cy.z + _cy.halfWidth + 11], [BRIDGE.x, _cy.z - _cy.halfWidth - 11]], 3.4); // path across
+      pushPoi('bridge', 'Canyon Bridge', BRIDGE.x, _cy.z, 4.0);
+    }
     pushPoi('gate', 'Village Gate', cx, cz + WALL_R, 3.0);
 
     var stat = endLambert(_sa, 'ef-buildings'); scene.add(stat);

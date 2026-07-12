@@ -13,6 +13,7 @@
 | build-07 | 5 | 2026-07-12 | Feature: `EF.engine.collision` registry (cylinder-vs-AABB/circle) resolving player + NPCs every tick; village expansion (tavern, blacksmith, 3 stalls + vendors, notice board, 4 new NPCs) all in `EF.world.pois`; enterable interiors via roof-reveal. Single integrator module, zero dept-file edits |
 | build-08 | 5 | 2026-07-12 | Spread-out settlement (req 7-12): buildings on a ring in a 60-unit clearing with 23.5u between them; ALL huts now enterable (world.js solid huts removed, rebuilt as enterable); large two-story tavern (3.2x hut, porch + windows), open-front blacksmith (2x hut); ground pads + door ramps so buildings sit level on rolling terrain and you walk in smoothly |
 | build-09 | 6 | 2026-07-12 | Fortified village + expanded world: crenellated stone wall (r35) with always-open south gate — solid collision, player-only gate, enemies clamped outside, `EF.village.playerSafe` disables enemy aggro inside; world grown ±110→±200 (merged mountain range, uncrossable canyon+river, dense dark forest); 10-min day/night (4 phases) with dusk/dawn lamp posts (≤4 point lights, cap 6 total); dirt paths; per-building visual variety. **Draw calls DOWN vs build-08** (~90 village / ~46 roam) via merged geometry + InstancedMesh scatter |
+| build-10 | 6 | 2026-07-12 | Canyon **bridge** at x=0: plank deck at rim height with a walkable pad + ramps (you cross on the deck instead of dropping into the trench), support piers into the chasm, and thick-box railings so you can't fall off. Opens a matching gap in the canyon barrier — the crossing works there and only there; the river stays uncrossable everywhere else. Reaches the enemies (wolves + skeletons) on the far/north side. Bridge merged into the static mesh — **draw calls unchanged (~47)** |
 
 ### Change requests (CR) — status
 
@@ -40,6 +41,33 @@
 | AR-5 | ⛔ open | Canonicalize/repoint UI ask-side events: `ui:menu`, `ui:start`, `ui:track`, `player:respawn` + Cycle 4 additions `journal:entry`, `dialogue:ambient` |
 | AR-6 | ⛔ open (new, build-06) | Ratify ONE `combat:damage` payload shape — combat ships `position:{x,y,z}`, UI assumed flat `{x,z,y}`; integrator patch accepts both |
 
+
+## build-10 (canyon bridge) — 2026-07-12, Integrator/QA
+
+Follow-up to build-09: "let me cross the canyon, there are enemies over there."
+Entirely in `integration/buildings.js` (`buildBridge()` + a gap in
+`canyonColliders()`); no department-file edits.
+
+- **Crossing** at x=0: a flat plank deck sits at rim height over the trench.
+  The existing ground-pad system makes the deck walkable (the sampler returns
+  deck height across the span, with ramps up onto it at each end), so you walk
+  across the deck instead of dropping to the water. Support piers, cross
+  braces, plank ridges, railing posts + top rails, and earthen ramp wedges at
+  the ends sell it visually.
+- **Barrier gap:** `canyonColliders()` now leaves a `BRIDGE.gap`-wide opening
+  at the bridge and keeps the solid barrier everywhere else — so the canyon is
+  crossable *only* at the bridge. Verified: you traverse south→north on the
+  deck (~9u above the water, never fall in); pushing across at x=40 is still
+  blocked.
+- **Railings** use thick-box colliders (a thin box or a bead line lets the
+  player get ejected/rolled off the side — same lesson as the wall); the thick
+  box always pushes you back toward the deck. Verified: shoving sideways off
+  mid-span stops you on the deck.
+- **Enemies reachable:** 12 hostiles (wolves + skeletons) live north of the
+  canyon and are now reachable on foot. Bridge geometry merges into the single
+  static mesh — draw calls unchanged (~47), 0 console errors.
+
+---
 
 ## build-09 (fortified village + expanded world) — 2026-07-12, Integrator/QA
 
