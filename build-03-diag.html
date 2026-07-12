@@ -1,0 +1,3448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>EMBERFELL &mdash; build-03-diag</title>
+<!-- ==========================================================================
+  EMBERFELL build-03-diag  (Integrator/QA, Cycle 2)
+  Single-file build for the Claude artifact sandbox (about:srcdoc iframe).
+  Contract v1.1 compliance:
+    s2.2  no <style> tags anywhere -- inline style attributes / cssText only
+    s2.3  three.js r128 loaded WITH crossorigin="anonymous"
+    s2.5  raw ASCII text; grepped clean of U+2018/2019/201C/201D
+  Load order (binding, per module file headers):
+    three.js r128 -> engine.js v1.1 -> data/biomes.js -> world.js
+    -> data/weapons.js -> data/enemyTypes.js -> player.js -> enemies.js
+    -> combat.js (combat dept LAST) -> npcs (stub) -> quests (stub)
+    -> ui (stub) -> diag-controls (TEMPORARY, Integrator) -> diag overlay (QA rig)
+  NOTE: the task sheet's coarse order "engine-world-enemies-combat-player"
+  conflicts with the delivered headers (player.js: "before combat.js/
+  enemies.js"; combat.js: "Load order: LAST"). Headers win -- see
+  CHANGELOG.md, deviation D-1.
+=========================================================================== -->
+</head>
+<body style="margin:0;padding:0;overflow:hidden;background:#1b2a24;">
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- ================= engine/engine.js       v1.1  (Engine Core) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL -- engine.js  v1.1
+ * Department: Engine Core. Owns: bootstrap, event bus, tick loop, audio,
+ * input, camera rig. Owns NOTHING gameplay: no damage, quests, spawning,
+ * inventory. Those belong to Player / Combat / Quest / UI departments.
+ *
+ * Priorities, in order: stability, performance, API clarity.
+ *
+ * CHANGELOG v1.0 -> v1.1 (per Engine Contract v1.1, Cycle 1 acceptance):
+ *   CR-1 (major): standalone harness now requires EXPLICIT boot({standalone:
+ *         true}). The "no player/world module found" auto-detection heuristic
+ *         is removed. Harness exposes removal handles: EF.engine.harness
+ *         .dispose() tears down its meshes, bus subscriptions, and ground
+ *         sampler. Plain boot() / auto-boot never starts the harness.
+ *   CR-2 (minor): per-frame allocations eliminated:
+ *         - game:tick payload is a single reused object (see note below)
+ *         - bus.emit no longer snapshots the handler array per emit; the bus
+ *           is copy-on-write (on/off replace the array, emit iterates the
+ *           captured reference) -- zero allocation on the emit path
+ *         - keyMove no longer returns a fresh object; keyboard state writes
+ *           straight into input.move
+ *   CR-4 (major): console-normalization polyfill is now the first statements
+ *         of this file per Contract v1.1 SS2.1 (sandbox ships only log/warn/
+ *         error; info/table/debug/etc. may be undefined and would throw).
+ *   SS4:  seven pre-approved events added to CANONICAL_EVENTS: weapon:equip,
+ *         item:use, dialogue:open, dialogue:choice, dialogue:close,
+ *         map:setMarker, quest:offered. Registry is now 26 events.
+ *
+ * PER-FRAME PAYLOAD NOTE (CR-2): the game:tick and game:resize payload
+ * objects are REUSED across emits. Read fields synchronously inside your
+ * handler; if you must retain values past the handler, copy the fields.
+ *
+ * ----------------------------------------------------------------------------
+ * PUBLIC API (Contract SS5 -- the only supported surface)
+ *
+ *   EF.bus.on(event, fn) -> off()     subscribe (fn receives payload)
+ *   EF.bus.once(event, fn) -> off()
+ *   EF.bus.off(event, fn)
+ *   EF.bus.emit(event, payload) -> n  number of handlers invoked
+ *
+ *   EF.engine.boot(opts?)             opts: { mount?: HTMLElement,
+ *                                             standalone?: boolean }
+ *                                     standalone:true ONLY in test harnesses.
+ *   EF.engine.autoBoot                set false BEFORE window load to take
+ *                                     manual control of boot order.
+ *   EF.engine.scene / .renderer       THREE objects (read, don't replace)
+ *   EF.engine.time                    { elapsed, dt, frame, fps }
+ *   EF.engine.setGroundSampler(fn)    fn(x, z) -> groundY. World Builder:
+ *                                     call setGroundSampler(terrainH) in your
+ *                                     game:booted handler. Default: flat 0.
+ *   EF.engine.groundAt(x, z)          query the active sampler
+ *
+ *   EF.engine.camera.setTarget(obj3D) third-person follow target
+ *                                     (Combat: point this at the player root)
+ *   EF.engine.camera.setDistance(d)   orbit distance (clamped 2.5..14)
+ *   EF.engine.camera.object           the THREE.PerspectiveCamera
+ *   EF.engine.camera.yaw / .pitch     current orbit angles
+ *
+ *   EF.engine.input.move              { x, y } normalized -1..1 (y=+1 fwd)
+ *   EF.engine.input.look              { dx, dy } this frame's look delta
+ *   EF.engine.input.buttons.isDown(name)
+ *   EF.engine.input.buttons.wasPressed(name)    edge, true for one tick
+ *   EF.engine.input.buttons.wasReleased(name)   edge, true for one tick
+ *   EF.engine.input.bindButton(name, el)  UI dept binds its DOM buttons here.
+ *       ADVISORY A-1 (stands): pointerleave releases held buttons. Design
+ *       hold/charge mechanics around this or file a CR.
+ *   EF.engine.input.unbindButton(name)
+ *   EF.engine.input.bindKey(code, name)   e.g. bindKey('Space','jump')
+ *
+ *   EF.engine.audio.register(name, spec)  spec: { type, freq, freqEnd?,
+ *                                         duration, gain?, attack? }
+ *                                         play: EF.bus.emit('audio:play',
+ *                                         { sfx: name })
+ *   EF.engine.audio.setMuted(bool) / .muted
+ *
+ *   EF.engine.harness                 present only after boot({standalone:
+ *                                     true}); .dispose() removes it (CR-1)
+ *   EF.engine.selfTest()              fires+receives every canonical event
+ *                                     with { __selfTest: true } payloads
+ *
+ *   Update hook: subscribe to game:tick. Do NOT run your own rAF loops.
+ *
+ * ----------------------------------------------------------------------------
+ * CONTRACT SS4 -- CANONICAL EVENTS (v1.1: this table IS the contract)
+ *
+ *   event              emitter   payload
+ *   game:booted        engine    { scene, renderer, camera }
+ *   game:tick          engine    { dt, elapsed, frame }   (REUSED object)
+ *   game:resize        engine    { width, height }        (REUSED object)
+ *   game:paused        engine    { }        (tab hidden)
+ *   game:resumed       engine    { }
+ *   input:button       engine    { name, pressed }        (edge events)
+ *   audio:play         any       { sfx, detune? } or "sfxName"
+ *   camera:shake       any       { intensity?, duration? }
+ *   player:damaged     combat    { amount, source }  (engine listens: shake)
+ *   player:spawned     player    { position }
+ *   player:died        player    { cause }
+ *   player:levelup     player    { level }
+ *   enemy:spawned      combat    { type, id, position }
+ *   enemy:died         combat    { type, id }             (NOT enemy:killed)
+ *   quest:offered      quests    { id }                   [v1.1]
+ *   quest:started      quests    { id }                   (NOT quest:accepted)
+ *   quest:updated      quests    { id, progress }
+ *   quest:completed    quests    { id }
+ *   loot:collected     player    { item, count }          (NOT item:pickup)
+ *   weapon:equip       combat    { id, slot? }            [v1.1]
+ *   item:use           player    { item }                 [v1.1]
+ *   dialogue:open      quests/ui { npc }                  [v1.1]
+ *   dialogue:choice    quests/ui { npc, index }           [v1.1]
+ *   dialogue:close     quests/ui { npc }                  [v1.1]
+ *   map:setMarker      any       { id, position }         [v1.1]
+ *   ui:toast           any       { text }
+ *
+ * Payloads emitted by EF.engine.selfTest() carry { __selfTest: true } and
+ * MUST be ignored by all gameplay handlers (Contract SS4).
+ *
+ * ----------------------------------------------------------------------------
+ * Deployment (Contract SS2): Claude artifact sandbox, about:srcdoc iframe.
+ * - Load THREE r128 from cdnjs WITH crossorigin="anonymous" (SS2.3) or all
+ *   library errors report as unusable "Script error":
+ *   <script crossorigin="anonymous"
+ *    src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js">
+ *   <\/script>
+ * - WebGL 1.0 only assumed. Reference viewport 402x708 CSS px, dpr 3;
+ *   pixel-ratio cap 1.5 stands.
+ * - No <style> tags anywhere in engine output: all engine CSS is inline
+ *   via el.style.cssText.
+ * ========================================================================= */
+(function () {
+  'use strict';
+
+  /* ---- CR-4: console normalization -- MUST stay the first statements ------
+   * Sandbox guarantees only console.log / warn / error. Everything else may
+   * be undefined and will throw if called. Map missing methods to log (or to
+   * a no-op where a log fallback would be noise). */
+  (function normalizeConsole() {
+    var g = typeof window !== 'undefined' ? window : globalThis;
+    var c = g.console || (g.console = {});
+    var base = typeof c.log === 'function' ? c.log : function () {};
+    if (typeof c.log !== 'function') c.log = base;
+    var toLog = ['info', 'debug', 'trace', 'table', 'dir'];
+    var toNoop = ['group', 'groupEnd', 'groupCollapsed', 'time', 'timeEnd',
+                  'count', 'assert', 'profile', 'profileEnd'];
+    var i;
+    for (i = 0; i < toLog.length; i++) {
+      if (typeof c[toLog[i]] !== 'function') c[toLog[i]] = base;
+    }
+    for (i = 0; i < toNoop.length; i++) {
+      if (typeof c[toNoop[i]] !== 'function') c[toNoop[i]] = function () {};
+    }
+    if (typeof c.warn !== 'function') c.warn = base;
+    if (typeof c.error !== 'function') c.error = base;
+  })();
+
+  if (typeof THREE === 'undefined') {
+    console.error('[EF.engine] THREE (r128) must be loaded before engine.js');
+    return;
+  }
+
+  var EF = (window.EF = window.EF || {});
+  var VERSION = '1.1';
+
+  /* =========================================================================
+   * 1. EVENT BUS  (copy-on-write: zero allocation on the emit path -- CR-2)
+   * ======================================================================= */
+
+  var CANONICAL_EVENTS = {
+    'game:booted':     { scene: null, renderer: null, camera: null },
+    'game:tick':       { dt: 0.016, elapsed: 1.0, frame: 60 },
+    'game:resize':     { width: 402, height: 708 },
+    'game:paused':     {},
+    'game:resumed':    {},
+    'input:button':    { name: 'jump', pressed: true },
+    'audio:play':      { sfx: 'ui.click' },
+    'camera:shake':    { intensity: 0.3, duration: 0.25 },
+    'player:damaged':  { amount: 5, source: 'wolf' },
+    'player:spawned':  { position: { x: 0, y: 0, z: 0 } },
+    'player:died':     { cause: 'wolf' },
+    'player:levelup':  { level: 2 },
+    'enemy:spawned':   { type: 'wolf', id: 'wolf-1', position: { x: 4, y: 0, z: 4 } },
+    'enemy:died':      { type: 'wolf', id: 'wolf-1' },
+    'quest:offered':   { id: 'maren.wolves' },                      /* v1.1 */
+    'quest:started':   { id: 'maren.wolves' },
+    'quest:updated':   { id: 'maren.wolves', progress: 0.5 },
+    'quest:completed': { id: 'maren.wolves' },
+    'loot:collected':  { item: 'pelt', count: 1 },
+    'weapon:equip':    { id: 'rusty-sword', slot: 'main' },         /* v1.1 */
+    'item:use':        { item: 'potion' },                          /* v1.1 */
+    'dialogue:open':   { npc: 'maren' },                            /* v1.1 */
+    'dialogue:choice': { npc: 'maren', index: 0 },                  /* v1.1 */
+    'dialogue:close':  { npc: 'maren' },                            /* v1.1 */
+    'map:setMarker':   { id: 'maren', position: { x: 0, y: 0, z: 0 } }, /* v1.1 */
+    'ui:toast':        { text: 'hello' }
+  };
+
+  var bus = (function () {
+    var map = Object.create(null);     // event -> handler array (immutable)
+    var warned = Object.create(null);  // non-canonical names warned once
+
+    // Copy-on-write discipline: on()/off() build a NEW array; emit() iterates
+    // whatever reference it captured. Handlers may safely (un)subscribe
+    // mid-emit; changes take effect on the NEXT emit. No per-emit allocation.
+    function on(ev, fn) {
+      if (typeof fn !== 'function') throw new Error('[EF.bus] handler must be a function');
+      var arr = map[ev];
+      map[ev] = arr ? arr.concat([fn]) : [fn];
+      return function off() { bus.off(ev, fn); };
+    }
+
+    function once(ev, fn) {
+      var off = on(ev, function (p) { off(); fn(p); });
+      return off;
+    }
+
+    function off(ev, fn) {
+      var arr = map[ev];
+      if (!arr) return;
+      var i = arr.indexOf(fn);
+      if (i === -1) return;
+      if (arr.length === 1) { delete map[ev]; return; }
+      var next = arr.slice(0, i).concat(arr.slice(i + 1));
+      map[ev] = next;
+    }
+
+    function emit(ev, payload) {
+      if (!(ev in CANONICAL_EVENTS) && !warned[ev]) {
+        warned[ev] = true;
+        console.warn('[EF.bus] non-canonical event "' + ev + '" -- amend Contract SS4 / CANONICAL_EVENTS if intentional');
+      }
+      var arr = map[ev];               // captured reference; never mutated
+      if (!arr) return 0;
+      var n = 0;
+      for (var i = 0; i < arr.length; i++) {
+        try { arr[i](payload); n++; }
+        catch (err) {
+          // one broken department must not take down the frame
+          console.error('[EF.bus] handler error on "' + ev + '":', err);
+        }
+      }
+      return n;
+    }
+
+    return { on: on, once: once, off: off, emit: emit };
+  })();
+
+  EF.bus = bus;
+
+  /* =========================================================================
+   * 2. AUDIO -- WebAudio manager, named oscillator sfx behind audio:play
+   * ======================================================================= */
+
+  var audio = (function () {
+    var ctx = null;
+    var master = null;
+    var registry = Object.create(null);
+    var api = { muted: false };
+
+    // Placeholder set; Audio/UI departments register the real palette.
+    var DEFAULT_SFX = {
+      'ui.click': { type: 'square',   freq: 660, freqEnd: 520,  duration: 0.06, gain: 0.15 },
+      'jump':     { type: 'triangle', freq: 300, freqEnd: 640,  duration: 0.14, gain: 0.22 },
+      'hit':      { type: 'sawtooth', freq: 220, freqEnd: 70,   duration: 0.18, gain: 0.28 },
+      'pickup':   { type: 'sine',     freq: 880, freqEnd: 1320, duration: 0.12, gain: 0.20 },
+      'hurt':     { type: 'square',   freq: 160, freqEnd: 60,   duration: 0.22, gain: 0.30 }
+    };
+
+    function ensureCtx() {
+      if (ctx) return ctx;
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.9;
+      master.connect(ctx.destination);
+      return ctx;
+    }
+
+    // iOS: AudioContext must be created/resumed inside the FIRST user gesture.
+    function unlockOnGesture() {
+      function unlock() {
+        var c = ensureCtx();
+        if (c && c.state === 'suspended') c.resume();
+        window.removeEventListener('touchstart', unlock, true);
+        window.removeEventListener('pointerdown', unlock, true);
+        window.removeEventListener('keydown', unlock, true);
+      }
+      window.addEventListener('touchstart', unlock, true);
+      window.addEventListener('pointerdown', unlock, true);
+      window.addEventListener('keydown', unlock, true);
+    }
+
+    function register(name, spec) { registry[name] = spec; }
+
+    function play(name, detune) {
+      if (api.muted) return;
+      var spec = registry[name];
+      if (!spec) { console.warn('[EF.audio] unknown sfx "' + name + '"'); return; }
+      var c = ensureCtx();
+      if (!c || c.state !== 'running') return; // silent no-op pre-gesture
+
+      var t0 = c.currentTime;
+      var osc = c.createOscillator();
+      var g = c.createGain();
+      var dur = spec.duration || 0.1;
+      var peak = spec.gain != null ? spec.gain : 0.2;
+      var attack = spec.attack != null ? spec.attack : 0.005;
+
+      osc.type = spec.type || 'sine';
+      osc.frequency.setValueAtTime((spec.freq || 440) * (detune || 1), t0);
+      if (spec.freqEnd) {
+        osc.frequency.exponentialRampToValueAtTime(
+          Math.max(1, spec.freqEnd * (detune || 1)), t0 + dur);
+      }
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t0 + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+
+      osc.connect(g); g.connect(master);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.02);
+      osc.onended = function () { osc.disconnect(); g.disconnect(); };
+    }
+
+    for (var k in DEFAULT_SFX) register(k, DEFAULT_SFX[k]);
+    unlockOnGesture();
+
+    bus.on('audio:play', function (p) {
+      if (p && p.__selfTest) return;
+      if (typeof p === 'string') return play(p);
+      if (p && p.sfx) play(p.sfx, p.detune);
+    });
+
+    api.register = register;
+    api.setMuted = function (m) { api.muted = !!m; };
+    return api;
+  })();
+
+  /* =========================================================================
+   * 3. INPUT -- floating joystick (left half), camera drag (right half),
+   *    named button registry, WASD/mouse fallback.
+   *    All input is read from EF.engine.input; only the engine adds listeners.
+   * ======================================================================= */
+
+  var input = (function () {
+    var JOY_RADIUS = 48; // px, max thumb travel
+
+    var state = {
+      move: { x: 0, y: 0 },   // public, normalized (joystick or WASD)
+      look: { dx: 0, dy: 0 }, // public, per-frame delta (set at tick start)
+      pointerActive: { joystick: false, camera: false }
+    };
+
+    var lookAccum = { dx: 0, dy: 0 };  // raw, drained each tick
+    var joyTouchId = null, camTouchId = null;
+    var joyOrigin = { x: 0, y: 0 };
+    var mouseDragging = false;
+    var lastMouse = { x: 0, y: 0 };
+
+    // ---- named buttons -----------------------------------------------------
+    var buttons = Object.create(null); // name -> {down,pressed,released,el,handlers}
+    var keyMap = Object.create(null);  // KeyboardEvent.code -> button name
+
+    function btn(name) {
+      return buttons[name] || (buttons[name] = { down: false, pressed: false, released: false, el: null, handlers: null });
+    }
+    function setButton(name, down) {
+      var b = btn(name);
+      if (b.down === down) return;
+      b.down = down;
+      if (down) b.pressed = true; else b.released = true;
+      bus.emit('input:button', { name: name, pressed: down }); // edge-rate, not per-frame
+    }
+
+    function bindButton(name, el) {
+      unbindButton(name);
+      var b = btn(name);
+      var onDown = function (e) { e.preventDefault(); setButton(name, true); };
+      var onUp   = function (e) { e.preventDefault(); setButton(name, false); };
+      el.addEventListener('pointerdown', onDown);
+      el.addEventListener('pointerup', onUp);
+      el.addEventListener('pointercancel', onUp);
+      el.addEventListener('pointerleave', onUp); // ADVISORY A-1: releases held buttons
+      el.style.touchAction = 'none'; // stop iOS scroll/zoom from a held button
+      b.el = el;
+      b.handlers = { down: onDown, up: onUp };
+    }
+    function unbindButton(name) {
+      var b = buttons[name];
+      if (!b || !b.el) return;
+      b.el.removeEventListener('pointerdown', b.handlers.down);
+      b.el.removeEventListener('pointerup', b.handlers.up);
+      b.el.removeEventListener('pointercancel', b.handlers.up);
+      b.el.removeEventListener('pointerleave', b.handlers.up);
+      b.el = null; b.handlers = null;
+    }
+    function bindKey(code, name) { keyMap[code] = name; }
+
+    // fallback bindings; UI dept may rebind
+    bindKey('Space', 'jump');
+    bindKey('KeyF', 'attack');
+    bindKey('KeyE', 'bag');
+
+    // ---- keyboard WASD -----------------------------------------------------
+    var keys = Object.create(null);
+
+    window.addEventListener('keydown', function (e) {
+      if (e.repeat) return;
+      keys[e.code] = true;
+      if (keyMap[e.code]) { setButton(keyMap[e.code], true); e.preventDefault(); }
+    });
+    window.addEventListener('keyup', function (e) {
+      keys[e.code] = false;
+      if (keyMap[e.code]) setButton(keyMap[e.code], false);
+    });
+    window.addEventListener('blur', function () {
+      keys = Object.create(null);
+      for (var n in buttons) setButton(n, false);
+      releaseJoy(); camTouchId = null; mouseDragging = false;
+      state.pointerActive.camera = false;
+    });
+
+    // ---- joystick visual (engine-owned affordance; inline styles only,
+    //      no <style> tags per Contract SS2.2) --------------------------------
+    var joyBase = null, joyNub = null;
+    function makeJoyDom(mount) {
+      joyBase = document.createElement('div');
+      joyNub = document.createElement('div');
+      joyBase.style.cssText =
+        'position:fixed;width:' + (JOY_RADIUS * 2) + 'px;height:' + (JOY_RADIUS * 2) + 'px;' +
+        'margin:-' + JOY_RADIUS + 'px 0 0 -' + JOY_RADIUS + 'px;border-radius:50%;' +
+        'border:2px solid rgba(255,255,255,0.25);background:rgba(255,255,255,0.06);' +
+        'pointer-events:none;z-index:5;display:none;';
+      joyNub.style.cssText =
+        'position:fixed;width:36px;height:36px;margin:-18px 0 0 -18px;border-radius:50%;' +
+        'background:rgba(255,255,255,0.35);pointer-events:none;z-index:6;display:none;';
+      mount.appendChild(joyBase);
+      mount.appendChild(joyNub);
+    }
+    function showJoy(x, y) {
+      joyBase.style.display = joyNub.style.display = 'block';
+      joyBase.style.left = x + 'px'; joyBase.style.top = y + 'px';
+      moveJoyNub(x, y);
+    }
+    function moveJoyNub(x, y) { joyNub.style.left = x + 'px'; joyNub.style.top = y + 'px'; }
+    function hideJoy() { if (joyBase) { joyBase.style.display = joyNub.style.display = 'none'; } }
+
+    function releaseJoy() {
+      joyTouchId = null;
+      state.move.x = 0; state.move.y = 0;
+      state.pointerActive.joystick = false;
+      hideJoy();
+    }
+
+    // ---- touch layer ---------------------------------------------------------
+    // PITFALL (v0): identifiers MUST be tracked per finger so joystick and
+    // camera drag work simultaneously. PITFALL: touchmove must preventDefault
+    // (passive:false) or iOS rubber-bands the page.
+    function attachTouch(canvas) {
+      canvas.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        for (var i = 0; i < e.changedTouches.length; i++) {
+          var t = e.changedTouches[i];
+          var leftHalf = t.clientX < window.innerWidth * 0.5;
+          if (leftHalf && joyTouchId === null) {
+            joyTouchId = t.identifier;
+            joyOrigin.x = t.clientX; joyOrigin.y = t.clientY;
+            state.pointerActive.joystick = true;
+            showJoy(t.clientX, t.clientY);
+          } else if (camTouchId === null) {
+            camTouchId = t.identifier;
+            lastMouse.x = t.clientX; lastMouse.y = t.clientY; // struct reused
+            state.pointerActive.camera = true;
+          }
+        }
+      }, { passive: false });
+
+      canvas.addEventListener('touchmove', function (e) {
+        e.preventDefault(); // iOS rubber-band guard
+        for (var i = 0; i < e.changedTouches.length; i++) {
+          var t = e.changedTouches[i];
+          if (t.identifier === joyTouchId) {
+            var dx = t.clientX - joyOrigin.x;
+            var dy = t.clientY - joyOrigin.y;
+            var len = Math.sqrt(dx * dx + dy * dy);
+            if (len > JOY_RADIUS) {
+              // floating joystick: base trails the finger past max radius
+              var over = len - JOY_RADIUS;
+              joyOrigin.x += dx / len * over;
+              joyOrigin.y += dy / len * over;
+              joyBase.style.left = joyOrigin.x + 'px';
+              joyBase.style.top = joyOrigin.y + 'px';
+              dx = t.clientX - joyOrigin.x;
+              dy = t.clientY - joyOrigin.y;
+              len = JOY_RADIUS;
+            }
+            moveJoyNub(joyOrigin.x + dx, joyOrigin.y + dy);
+            state.move.x = dx / JOY_RADIUS;
+            state.move.y = -dy / JOY_RADIUS; // screen-down is world-backward
+          } else if (t.identifier === camTouchId) {
+            lookAccum.dx += t.clientX - lastMouse.x;
+            lookAccum.dy += t.clientY - lastMouse.y;
+            lastMouse.x = t.clientX; lastMouse.y = t.clientY;
+          }
+        }
+      }, { passive: false });
+
+      function endTouch(e) {
+        for (var i = 0; i < e.changedTouches.length; i++) {
+          var t = e.changedTouches[i];
+          if (t.identifier === joyTouchId) releaseJoy();
+          else if (t.identifier === camTouchId) {
+            camTouchId = null;
+            state.pointerActive.camera = false;
+          }
+        }
+      }
+      canvas.addEventListener('touchend', endTouch);
+      canvas.addEventListener('touchcancel', endTouch);
+      canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    }
+
+    // ---- mouse fallback (desktop) -------------------------------------------
+    function attachMouse(canvas) {
+      canvas.addEventListener('mousedown', function (e) {
+        mouseDragging = true;
+        lastMouse.x = e.clientX; lastMouse.y = e.clientY;
+        state.pointerActive.camera = true;
+      });
+      window.addEventListener('mousemove', function (e) {
+        if (!mouseDragging) return;
+        lookAccum.dx += e.clientX - lastMouse.x;
+        lookAccum.dy += e.clientY - lastMouse.y;
+        lastMouse.x = e.clientX; lastMouse.y = e.clientY;
+      });
+      window.addEventListener('mouseup', function () {
+        mouseDragging = false;
+        if (camTouchId === null) state.pointerActive.camera = false;
+      });
+    }
+
+    // called by the engine at the START of each tick.
+    // CR-2: keyboard movement writes straight into state.move -- no
+    // intermediate object is created per frame.
+    function preTick() {
+      if (joyTouchId === null) {
+        var x = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+        var y = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+        if (x !== 0 && y !== 0) { x *= 0.7071067811865476; y *= 0.7071067811865476; }
+        state.move.x = x; state.move.y = y;
+      }
+      state.look.dx = lookAccum.dx; state.look.dy = lookAccum.dy;
+      lookAccum.dx = 0; lookAccum.dy = 0;
+    }
+    // called by the engine at the END of each tick -- clears edge flags
+    function postTick() {
+      for (var n in buttons) { buttons[n].pressed = false; buttons[n].released = false; }
+    }
+
+    state.buttons = {
+      isDown: function (n) { var b = buttons[n]; return !!(b && b.down); },
+      wasPressed: function (n) { var b = buttons[n]; return !!(b && b.pressed); },
+      wasReleased: function (n) { var b = buttons[n]; return !!(b && b.released); }
+    };
+    state.bindButton = bindButton;
+    state.unbindButton = unbindButton;
+    state.bindKey = bindKey;
+    state._attach = function (canvas, mount) { makeJoyDom(mount); attachTouch(canvas); attachMouse(canvas); };
+    state._preTick = preTick;
+    state._postTick = postTick;
+    return state;
+  })();
+
+  /* =========================================================================
+   * 4. CAMERA RIG -- third-person yaw/pitch orbit, smoothing, ground clamp,
+   *    screen shake on player:damaged / camera:shake
+   * ======================================================================= */
+
+  var cameraRig = (function () {
+    var cam = new THREE.PerspectiveCamera(60, 1, 0.1, 120);
+    var target = null;
+
+    var rig = {
+      object: cam,
+      yaw: 0,
+      pitch: 0.45,          // radians above horizon
+      distance: 6.5,
+      minDistance: 2.5,
+      maxDistance: 14,
+      minPitch: -0.15,
+      maxPitch: 1.30,
+      lookSensitivity: 0.0045,
+      followLerp: 10,       // higher = snappier target follow
+      headOffset: 1.4       // look-at height above target origin
+    };
+
+    var smoothTarget = new THREE.Vector3(0, 0, 0);
+    var shake = { intensity: 0, decay: 6 };
+    var _desired = new THREE.Vector3(); // reused -- no per-frame allocation
+    var _lookAt = new THREE.Vector3();  // reused
+
+    rig.setTarget = function (obj) {
+      target = obj;
+      if (obj) smoothTarget.copy(obj.position);
+    };
+    rig.setDistance = function (d) {
+      rig.distance = Math.min(rig.maxDistance, Math.max(rig.minDistance, d));
+    };
+
+    bus.on('player:damaged', function (p) {
+      if (p && p.__selfTest) return;
+      var amt = (p && p.amount) || 1;
+      shake.intensity = Math.min(0.6, 0.08 + amt * 0.02);
+    });
+    bus.on('camera:shake', function (p) {
+      if (p && p.__selfTest) return;
+      shake.intensity = Math.max(shake.intensity, (p && p.intensity) || 0.25);
+    });
+
+    rig.update = function (dt, groundAt) {
+      // orbit from look input
+      rig.yaw -= input.look.dx * rig.lookSensitivity;
+      rig.pitch += input.look.dy * rig.lookSensitivity;
+      rig.pitch = Math.min(rig.maxPitch, Math.max(rig.minPitch, rig.pitch));
+
+      // smooth follow
+      if (target) {
+        var a = 1 - Math.exp(-rig.followLerp * dt);
+        smoothTarget.lerp(target.position, a);
+      }
+
+      var cx = smoothTarget.x, cy = smoothTarget.y + rig.headOffset, cz = smoothTarget.z;
+      var cp = Math.cos(rig.pitch), sp = Math.sin(rig.pitch);
+      _desired.set(
+        cx + rig.distance * cp * Math.sin(rig.yaw),
+        cy + rig.distance * sp,
+        cz + rig.distance * cp * Math.cos(rig.yaw)
+      );
+
+      // screen shake (decaying random offset)
+      if (shake.intensity > 0.001) {
+        _desired.x += (Math.random() * 2 - 1) * shake.intensity;
+        _desired.y += (Math.random() * 2 - 1) * shake.intensity;
+        _desired.z += (Math.random() * 2 - 1) * shake.intensity;
+        shake.intensity *= Math.exp(-shake.decay * dt);
+      } else {
+        shake.intensity = 0;
+      }
+
+      // terrain collision -- camera NEVER below ground (applied after shake)
+      var floor = groundAt(_desired.x, _desired.z) + 0.35;
+      if (_desired.y < floor) _desired.y = floor;
+
+      cam.position.copy(_desired);
+      _lookAt.set(cx, cy, cz);
+      cam.lookAt(_lookAt);
+    };
+
+    return rig;
+  })();
+
+  /* =========================================================================
+   * 5. ENGINE CORE -- bootstrap, tick loop, resize, harness, self-test
+   * ======================================================================= */
+
+  var engine = (function () {
+    var api = {
+      version: VERSION,
+      booted: false,
+      scene: null,
+      renderer: null,
+      camera: cameraRig,
+      input: input,
+      audio: audio,
+      bus: bus,
+      harness: null,
+      time: { elapsed: 0, dt: 0, frame: 0, fps: 0 }
+    };
+
+    var DEFAULT_SAMPLER = function () { return 0; };
+    var groundSampler = DEFAULT_SAMPLER;
+    api.setGroundSampler = function (fn) {
+      if (typeof fn !== 'function') throw new Error('[EF.engine] groundSampler must be fn(x,z)->y');
+      groundSampler = fn;
+    };
+    api.groundAt = function (x, z) { return groundSampler(x, z); };
+
+    var MAX_DT = 0.05; // clamp: never simulate more than 50ms per frame
+    var lastNow = 0, rafId = 0, paused = false;
+    var fpsAccum = 0, fpsFrames = 0;
+
+    // CR-2: reused payload objects. Handlers must not retain these across
+    // frames -- copy fields if you need them later.
+    var TICK_PAYLOAD = { dt: 0, elapsed: 0, frame: 0 };
+    var RESIZE_PAYLOAD = { width: 0, height: 0 };
+
+    function tick(now) {
+      rafId = requestAnimationFrame(tick);
+      if (paused) { lastNow = now; return; }
+
+      var dt = (now - lastNow) / 1000;
+      lastNow = now;
+      if (dt <= 0) return;
+      if (dt > MAX_DT) dt = MAX_DT; // clamped delta per contract
+
+      api.time.dt = dt;
+      api.time.elapsed += dt;
+      api.time.frame++;
+
+      fpsAccum += dt; fpsFrames++;
+      if (fpsAccum >= 0.5) { api.time.fps = Math.round(fpsFrames / fpsAccum); fpsAccum = 0; fpsFrames = 0; }
+
+      input._preTick();
+      TICK_PAYLOAD.dt = dt;
+      TICK_PAYLOAD.elapsed = api.time.elapsed;
+      TICK_PAYLOAD.frame = api.time.frame;
+      bus.emit('game:tick', TICK_PAYLOAD);
+      cameraRig.update(dt, groundSampler);
+      api.renderer.render(api.scene, cameraRig.object);
+      input._postTick();
+    }
+
+    function onResize() {
+      var w = window.innerWidth, h = window.innerHeight;
+      api.renderer.setSize(w, h);
+      cameraRig.object.aspect = w / h;
+      cameraRig.object.updateProjectionMatrix();
+      RESIZE_PAYLOAD.width = w; RESIZE_PAYLOAD.height = h;
+      bus.emit('game:resize', RESIZE_PAYLOAD);
+    }
+
+    api.boot = function (opts) {
+      if (api.booted) { console.warn('[EF.engine] boot() called twice; ignoring'); return api; }
+      opts = opts || {};
+      var mount = opts.mount || document.body;
+
+      // --- renderer: perf-first mobile settings per contract ---------------
+      var renderer = new THREE.WebGLRenderer({
+        antialias: false,
+        powerPreference: 'high-performance'
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.domElement.style.cssText =
+        'position:fixed;top:0;left:0;width:100%;height:100%;display:block;touch-action:none;';
+      mount.appendChild(renderer.domElement);
+
+      var scene = new THREE.Scene();
+      var FOG_COLOR = 0x1b2a24; // dusk pines
+      scene.background = new THREE.Color(FOG_COLOR);
+      scene.fog = new THREE.Fog(FOG_COLOR, 16, 58);
+
+      // baseline lighting -- cheap, no shadows by default
+      var hemi = new THREE.HemisphereLight(0xcfd8e6, 0x2a2620, 0.9);
+      var sun = new THREE.DirectionalLight(0xffe2b0, 0.7);
+      sun.position.set(12, 20, 8);
+      scene.add(hemi, sun);
+
+      api.scene = scene;
+      api.renderer = renderer;
+
+      input._attach(renderer.domElement, mount);
+      renderer.domElement.addEventListener('wheel', function (e) {
+        e.preventDefault();
+        cameraRig.setDistance(cameraRig.distance + (e.deltaY > 0 ? 0.8 : -0.8));
+      }, { passive: false });
+
+      window.addEventListener('resize', onResize);
+      window.addEventListener('orientationchange', onResize);
+
+      document.addEventListener('visibilitychange', function () {
+        var hide = document.hidden;
+        if (hide === paused) return;
+        paused = hide;
+        bus.emit(hide ? 'game:paused' : 'game:resumed', {});
+      });
+
+      api.booted = true;
+      bus.emit('game:booted', { scene: scene, renderer: renderer, camera: cameraRig.object });
+
+      // CR-1: harness ONLY on explicit request. No auto-detection.
+      if (opts.standalone === true) standaloneHarness();
+
+      lastNow = performance.now();
+      rafId = requestAnimationFrame(tick);
+      return api;
+    };
+
+    api.shutdown = function () {
+      cancelAnimationFrame(rafId);
+      api.booted = false;
+    };
+
+    /* ---- STANDALONE SMOKE-TEST HARNESS (CR-1) -------------------------------
+     * Engine-only proving ground. Runs ONLY via boot({standalone:true}) --
+     * never in integrated builds. Placeholder cube as "player", sine terrain
+     * to prove the camera ground-clamp, cube driven from EF.engine.input.
+     * NOT gameplay. All handles kept; EF.engine.harness.dispose() removes
+     * every mesh, bus subscription, and the harness ground sampler. */
+    function standaloneHarness() {
+      console.info('[EF.engine] standalone harness active (explicit standalone:true)');
+
+      var offs = [];      // bus unsubscribe handles
+      var objects = [];   // scene objects to remove on dispose
+
+      function hills(x, z) {
+        return Math.sin(x * 0.22) * Math.cos(z * 0.19) * 1.2;
+      }
+      api.setGroundSampler(hills);
+
+      var SIZE = 90, SEG = 60;
+      var geo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
+      geo.rotateX(-Math.PI / 2);
+      var pos = geo.attributes.position;
+      for (var i = 0; i < pos.count; i++) {
+        pos.setY(i, hills(pos.getX(i), pos.getZ(i)));
+      }
+      geo.computeVertexNormals();
+      var ground = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x2f4a38 }));
+      var grid = new THREE.GridHelper(SIZE, 30, 0x3d5c47, 0x27392e);
+      var cube = new THREE.Mesh(
+        new THREE.BoxGeometry(0.8, 1.6, 0.8),
+        new THREE.MeshLambertMaterial({ color: 0xd9c58a })
+      );
+      cube.position.set(0, hills(0, 0) + 0.8, 0);
+      api.scene.add(ground, grid, cube);
+      objects.push(ground, grid, cube);
+      cameraRig.setTarget(cube);
+
+      var SPEED = 5;
+      offs.push(bus.on('game:tick', function (t) {
+        var mv = input.move;
+        if (mv.x !== 0 || mv.y !== 0) {
+          // camera-relative movement
+          var yaw = cameraRig.yaw;
+          var fx = -Math.sin(yaw), fz = -Math.cos(yaw); // forward
+          var rx = Math.cos(yaw),  rz = -Math.sin(yaw); // right
+          cube.position.x += (fx * mv.y + rx * mv.x) * SPEED * t.dt;
+          cube.position.z += (fz * mv.y + rz * mv.x) * SPEED * t.dt;
+        }
+        cube.position.y = hills(cube.position.x, cube.position.z) + 0.8;
+
+        // smoke-test the engine's own hooks
+        if (input.buttons.wasPressed('jump'))   bus.emit('audio:play', { sfx: 'jump' });
+        if (input.buttons.wasPressed('attack')) bus.emit('camera:shake', { intensity: 0.3 });
+      }));
+
+      api.harness = {
+        dispose: function () {
+          for (var i = 0; i < offs.length; i++) offs[i]();
+          for (var j = 0; j < objects.length; j++) {
+            api.scene.remove(objects[j]);
+            if (objects[j].geometry) objects[j].geometry.dispose();
+            if (objects[j].material) {
+              if (objects[j].material.dispose) objects[j].material.dispose();
+            }
+          }
+          cameraRig.setTarget(null);
+          groundSampler = DEFAULT_SAMPLER;
+          api.harness = null;
+          console.info('[EF.engine] harness disposed');
+        }
+      };
+    }
+
+    /* ---- SELF-TEST ---------------------------------------------------------
+     * Fires and receives every canonical event with dummy payloads.
+     * Payloads carry __selfTest:true so live handlers can ignore them. */
+    api.selfTest = function () {
+      var results = [];
+      var pass = true;
+      Object.keys(CANONICAL_EVENTS).forEach(function (ev) {
+        var received = false;
+        var payload = { __selfTest: true };
+        var dummy = CANONICAL_EVENTS[ev];
+        for (var k in dummy) payload[k] = dummy[k];
+
+        var off = bus.on(ev, function (p) { if (p && p.__selfTest) received = true; });
+        bus.emit(ev, payload);
+        off();
+
+        results.push({ event: ev, ok: received });
+        if (!received) pass = false;
+      });
+      console.table(results); // safe: normalized by the CR-4 polyfill
+      console.info('[EF.engine] v' + VERSION + ' self-test ' + (pass ? 'PASS' : 'FAIL') +
+        ' (' + results.length + ' canonical events)');
+      return { pass: pass, results: results };
+    };
+
+    return api;
+  })();
+
+  EF.engine = engine;
+
+  // Auto-boot the ENGINE ONLY (never the harness -- CR-1) at window load.
+  // Set EF.engine.autoBoot = false immediately after this script tag to take
+  // manual control of boot order. Test harnesses call boot({standalone:true}).
+  engine.autoBoot = true;
+  window.addEventListener('load', function () {
+    if (engine.autoBoot && !engine.booted) engine.boot();
+  });
+})();
+</script>
+<!-- ================= data/biomes.js         v1.0  (World Builder) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL — data/biomes.js  (v1.0, Cycle 2)
+ * Department: World Builder. Pure data — no THREE, no engine dependency.
+ * Load order: three.js -> engine.js -> data/biomes.js -> world.js
+ * Contract v1.1 notes: ASCII quotes only (SS2.5); no console.info anywhere.
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+
+  EF.worldData = {
+
+    seed: 1337,
+
+    /* ---- terrain field ---------------------------------------------------
+     * world.js builds terrainH(x,z) from these numbers. Analytic FBM value
+     * noise + a northern mountain ridge (negative z). POIs below flatten
+     * the field locally, and the flattening is part of terrainH itself so
+     * the sampler and the visual mesh can never disagree.
+     * -------------------------------------------------------------------- */
+    terrain: {
+      size: 220,            // world extents: size x size, centered on origin
+      segments: 110,        // visual mesh grid (2 m vertex spacing)
+      baseAmp: 2.6,         // rolling-hill amplitude (m)
+      baseFreq: 0.045,
+      octaves: 4,
+      lacunarity: 2.05,
+      gain: 0.5,
+      mountain: {           // ridge rising toward the north edge
+        start: -46,         // influence begins as z drops past this
+        full: -104,         // full influence
+        height: 20,         // added meters at full influence
+        freq: 0.03,
+        octaves: 3
+      },
+      colors: {             // vertex-color palette, blended by height/slope
+        grass:    0x4a7c3a,
+        grassDry: 0x6f8b45,
+        dirt:     0x77603e,
+        rock:     0x7d7f86,
+        snow:     0xe8edf4
+      },
+      snowHeight: 12.5,     // snow fades in above this elevation
+      rockSlope: 0.75       // gradient magnitude where rock takes over
+    },
+
+    /* ---- points of interest ----------------------------------------------
+     * Every POI with flatten:true carves a local plateau into terrainH.
+     * drop = plateau height relative to the raw terrain at the center.
+     * world.js exposes these (plus resolved y) as EF.world.pois.
+     * -------------------------------------------------------------------- */
+    pois: [
+      { id: 'village', label: 'Emberfell Village', x: 0,   z: 10,  radius: 15, flatten: true, drop: 0    },
+      { id: 'tower',   label: 'The Sealed Tower',  x: 32,  z: -24, radius: 8,  flatten: true, drop: 0.4  },
+      { id: 'stones',  label: 'Standing Stones',   x: -30, z: -32, radius: 9,  flatten: true, drop: 0.2  },
+      { id: 'arch',    label: 'Ruined Arch',       x: 20,  z: 36,  radius: 7,  flatten: true, drop: 0.1  },
+      { id: 'lake',    label: 'Stillmere',         x: -36, z: 28,  radius: 13, flatten: true, drop: -2.4,
+        water: 1.2 }        // water plane sits this far above the lake bed
+    ],
+
+    /* ---- biome scatter rules ----------------------------------------------
+     * region kinds understood by world.js:
+     *   circle {x,z,r} | ring {x,z,rMin,rMax} | zband {zMin,zMax}
+     * Each rule scatters `count` instances of `mesh` (pine|birch|rock|tuft)
+     * inside the region, rejecting samples that land in a POI, outside the
+     * world, above maxSlope, or outside [minH,maxH]. `tint` multiplies the
+     * mesh's baked vertex colors per instance (jitter adds variation).
+     * -------------------------------------------------------------------- */
+    biomes: [
+      {
+        id: 'village_clearing',        // kept intentionally empty
+        region: { kind: 'circle', x: 0, z: 10, r: 20 },
+        scatter: []
+      },
+      {
+        id: 'pine_forest',
+        region: { kind: 'ring', x: 0, z: 4, rMin: 22, rMax: 82 },
+        scatter: [
+          { mesh: 'pine', count: 320, minScale: 0.85, maxScale: 1.6,
+            maxSlope: 0.62, minH: -2.5, maxH: 9.5, tint: 0xffffff, jitter: 0.22 },
+          { mesh: 'tuft', count: 240, minScale: 0.7,  maxScale: 1.3,
+            maxSlope: 0.5,  minH: -2.5, maxH: 8,   tint: 0xffffff, jitter: 0.3 },
+          { mesh: 'rock', count: 26,  minScale: 0.35, maxScale: 0.9,
+            maxSlope: 0.9,  minH: -3,   maxH: 10,  tint: 0x8b8d93, jitter: 0.18 }
+        ]
+      },
+      {
+        id: 'birch_grove',
+        region: { kind: 'circle', x: 54, z: 24, r: 32 },
+        scatter: [
+          { mesh: 'birch', count: 130, minScale: 0.8, maxScale: 1.45,
+            maxSlope: 0.55, minH: -2.5, maxH: 7, tint: 0xffffff, jitter: 0.2 },
+          { mesh: 'tuft',  count: 130, minScale: 0.7, maxScale: 1.2,
+            maxSlope: 0.5,  minH: -2.5, maxH: 7, tint: 0xd9e08a, jitter: 0.25 }
+        ]
+      },
+      {
+        id: 'rocky_highlands',
+        region: { kind: 'zband', zMin: -92, zMax: -48 },
+        scatter: [
+          { mesh: 'rock', count: 95, minScale: 0.5, maxScale: 2.4,
+            maxSlope: 1.6, minH: 1, maxH: 14, tint: 0x84868e, jitter: 0.2 },
+          { mesh: 'pine', count: 55, minScale: 0.7, maxScale: 1.15,
+            maxSlope: 0.7, minH: 1, maxH: 11, tint: 0xbfc9c2, jitter: 0.15 }
+        ]
+      },
+      {
+        id: 'snowy_peaks',
+        region: { kind: 'zband', zMin: -110, zMax: -86 },
+        scatter: [
+          { mesh: 'rock', count: 60, minScale: 0.6, maxScale: 2.8,
+            maxSlope: 2.2, minH: 8, maxH: 40, tint: 0xe4eaf1, jitter: 0.1 },
+          { mesh: 'pine', count: 24, minScale: 0.6, maxScale: 1.0,
+            maxSlope: 0.8, minH: 8, maxH: 20, tint: 0xdfe7e4, jitter: 0.1 }
+        ]
+      }
+    ],
+
+    /* ---- pickups ---------------------------------------------------------
+     * Color per itemId for EF.world.spawnPickup(). Unknown ids fall back
+     * to 'default'.
+     * -------------------------------------------------------------------- */
+    pickups: {
+      radius: 1.5,          // proximity collect distance (m)
+      bobHeight: 0.15,
+      colors: {
+        pelt:    0xa9743f,
+        coin:    0xf2c14e,
+        herb:    0x69c25f,
+        ember:   0xff7a3c,
+        'default': 0xcfd2da
+      }
+    }
+  };
+})();
+</script>
+<!-- ================= world.js               v1.0  (World Builder) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL — world.js  (v1.0, Cycle 2)
+ * Department: World Builder. Owns: terrain, biomes/scatter, POIs, day/night
+ * sky, water, fire, pickups. Owns NOTHING about the player or combat.
+ *
+ * Requires (in load order): THREE r128, engine.js (EF.bus/EF.engine),
+ * data/biomes.js (EF.worldData).
+ *
+ * Contract v1.1 compliance:
+ *   SS5  — terrainH registered via EF.engine.setGroundSampler inside the
+ *          'game:booted' handler; all animation runs off 'game:tick';
+ *          no private rAF loops.
+ *   SS4  — emits only canonical events: 'loot:collected', 'audio:play'.
+ *          NOTE: dept spec said "item:pickup"; SS4 renamed it. See
+ *          delivery notes. All handlers ignore __selfTest payloads.
+ *   SS2  — ASCII quotes only; console.log/warn/error only; WebGL1-safe
+ *          geometry; no per-frame allocation in tick paths (CR-2 spirit).
+ *
+ * Public surface (EF.world):
+ *   terrainH(x,z)            canonical analytic height (matches mesh)
+ *   pois                     [{id,label,x,z,y,radius}]
+ *   getTimePhase()           'dawn' | 'day' | 'dusk' | 'night'
+ *   time01 / setTime01(t) / setDayLength(seconds)
+ *   spawnPickup(itemId,x,z)  -> {remove()}
+ *   setPlayerObject(object3D)  register player root for pickup proximity
+ *                              (Combat: call this from your spawn path)
+ * ========================================================================= */
+(function () {
+  'use strict';
+  if (typeof THREE === 'undefined') {
+    console.error('[EF.world] THREE (r128) must be loaded before world.js');
+    return;
+  }
+  var EF = (window.EF = window.EF || {});
+  if (!EF.worldData) {
+    console.error('[EF.world] data/biomes.js must be loaded before world.js');
+    return;
+  }
+
+  var D = EF.worldData;
+  var T = D.terrain;
+
+  /* Registering EF.world before window 'load' keeps the engine's
+   * standalone harness from booting (engine.js checks !EF.world). */
+  var world = { pois: [], ready: false, time01: 0.35 };
+  EF.world = world;
+
+  /* ===================== 1. NOISE + HEIGHT FIELD ===================== */
+
+  function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+  function smooth(t) { return t * t * (3 - 2 * t); }
+  function smoothstep(a, b, x) { return smooth(clamp01((x - a) / (b - a))); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function hash2(ix, iz) {
+    var s = Math.sin(ix * 127.1 + iz * 311.7 + D.seed * 0.013) * 43758.5453123;
+    return s - Math.floor(s);
+  }
+
+  function vnoise(x, z) {
+    var ix = Math.floor(x), iz = Math.floor(z);
+    var fx = x - ix, fz = z - iz;
+    var a = hash2(ix, iz), b = hash2(ix + 1, iz);
+    var c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+    var ux = smooth(fx), uz = smooth(fz);
+    return (a * (1 - ux) + b * ux) * (1 - uz) + (c * (1 - ux) + d * ux) * uz;
+  }
+
+  function fbm(x, z, oct, lac, gain) {
+    var amp = 1, f = 1, sum = 0, norm = 0;
+    for (var i = 0; i < oct; i++) {
+      sum += vnoise(x * f, z * f) * amp;
+      norm += amp;
+      amp *= gain;
+      f *= lac;
+    }
+    return sum / norm; // 0..1
+  }
+
+  /* Raw field: rolling hills + northern ridge. */
+  function rawH(x, z) {
+    var h = (fbm(x * T.baseFreq, z * T.baseFreq, T.octaves, T.lacunarity, T.gain) * 2 - 1) * T.baseAmp;
+    var m = T.mountain;
+    var mm = smooth(clamp01((m.start - z) / (m.start - m.full)));
+    if (mm > 0) {
+      h += mm * m.height * (0.55 + 0.45 * fbm(x * m.freq + 100, z * m.freq - 70, m.octaves, 2.1, 0.5));
+    }
+    return h;
+  }
+
+  /* POI flattening baked into the canonical sampler. Each flattening POI
+   * becomes a plateau at (raw height at center + drop); fully flat inside
+   * 55% of the radius, blended smoothly to raw terrain at the rim. */
+  var flatteners = [];
+  (function initPois() {
+    for (var i = 0; i < D.pois.length; i++) {
+      var p = D.pois[i];
+      var flatY = rawH(p.x, p.z) + (p.drop || 0);
+      if (p.flatten) {
+        flatteners.push({ x: p.x, z: p.z, radius: p.radius, flatY: flatY });
+      }
+      world.pois.push({
+        id: p.id, label: p.label, x: p.x, z: p.z,
+        y: flatY, radius: p.radius
+      });
+    }
+  })();
+
+  function terrainH(x, z) {
+    var h = rawH(x, z);
+    for (var i = 0; i < flatteners.length; i++) {
+      var p = flatteners[i];
+      var dx = x - p.x, dz = z - p.z;
+      var d2 = dx * dx + dz * dz;
+      if (d2 < p.radius * p.radius) {
+        var d = Math.sqrt(d2);
+        var w = 1 - smoothstep(p.radius * 0.55, p.radius, d);
+        h = lerp(h, p.flatY, w);
+      }
+    }
+    return h;
+  }
+  world.terrainH = terrainH;
+
+  function slopeAt(x, z) {
+    var e = 0.45;
+    var hx = terrainH(x + e, z) - terrainH(x - e, z);
+    var hz = terrainH(x, z + e) - terrainH(x, z - e);
+    return Math.sqrt(hx * hx + hz * hz) / (2 * e);
+  }
+
+  /* ===================== 2. TERRAIN MESH (vertex colored) ============= */
+
+  function buildTerrain(scene) {
+    var geo = new THREE.PlaneGeometry(T.size, T.size, T.segments, T.segments);
+    geo.rotateX(-Math.PI / 2);
+    var pos = geo.attributes.position;
+    var colors = new Float32Array(pos.count * 3);
+    var cGrass = new THREE.Color(T.colors.grass);
+    var cDry = new THREE.Color(T.colors.grassDry);
+    var cDirt = new THREE.Color(T.colors.dirt);
+    var cRock = new THREE.Color(T.colors.rock);
+    var cSnow = new THREE.Color(T.colors.snow);
+    var tmp = new THREE.Color();
+
+    for (var i = 0; i < pos.count; i++) {
+      var x = pos.getX(i), z = pos.getZ(i);
+      var h = terrainH(x, z);
+      pos.setY(i, h);
+      var s = slopeAt(x, z);
+
+      tmp.copy(cGrass).lerp(cDry, vnoise(x * 0.12 + 31, z * 0.12 - 17)); // patchy meadow
+      tmp.lerp(cDirt, smoothstep(0.35, 0.62, s) * 0.85);                 // dirt on grades
+      tmp.lerp(cRock, smoothstep(T.rockSlope, T.rockSlope + 0.35, s));   // rock on cliffs
+      var sn = smoothstep(T.snowHeight, T.snowHeight + 2.5, h) *
+               (1 - smoothstep(0.95, 1.35, s));                          // snow caps
+      tmp.lerp(cSnow, sn);
+
+      colors[i * 3] = tmp.r; colors[i * 3 + 1] = tmp.g; colors[i * 3 + 2] = tmp.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+
+    var mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    mesh.name = 'ef-terrain';
+    scene.add(mesh);
+    return mesh;
+  }
+
+  /* ===================== 3. GEOMETRY MERGE HELPERS ==================== */
+  /* All static POI dressing merges into ONE mesh (1 draw call). Build-time
+   * allocation only. */
+
+  var _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+  var _q = new THREE.Quaternion(), _e = new THREE.Euler(), _m3 = new THREE.Matrix3();
+
+  function mat(px, py, pz, sx, sy, sz, ry, rx, rz) {
+    _q.setFromEuler(_e.set(rx || 0, ry || 0, rz || 0));
+    return new THREE.Matrix4().compose(_v1.set(px, py, pz), _q, _v2.set(sx, sy, sz));
+  }
+
+  function beginMerge() { return { pos: [], nor: [], col: [] }; }
+
+  function pushGeom(acc, geom, colorHex, matrix) {
+    var g = geom.index ? geom.toNonIndexed() : geom;
+    var p = g.attributes.position, n = g.attributes.normal;
+    _m3.getNormalMatrix(matrix);
+    var c = new THREE.Color(colorHex);
+    for (var i = 0; i < p.count; i++) {
+      _v3.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(matrix);
+      acc.pos.push(_v3.x, _v3.y, _v3.z);
+      _v3.set(n.getX(i), n.getY(i), n.getZ(i)).applyMatrix3(_m3).normalize();
+      acc.nor.push(_v3.x, _v3.y, _v3.z);
+      acc.col.push(c.r, c.g, c.b);
+    }
+    if (g !== geom) g.dispose();
+  }
+
+  function endMerge(acc, name) {
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(acc.nor, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(acc.col, 3));
+    var mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    mesh.name = name;
+    return mesh;
+  }
+
+  /* Primitive library (unit-ish shapes, scaled via matrices). */
+  var GEO = {
+    box: new THREE.BoxGeometry(1, 1, 1),
+    cyl: new THREE.CylinderGeometry(0.5, 0.5, 1, 10),
+    cone: new THREE.ConeGeometry(0.5, 1, 10),
+    ico: new THREE.IcosahedronGeometry(1, 0)
+  };
+
+  function poiById(id) {
+    for (var i = 0; i < world.pois.length; i++) {
+      if (world.pois[i].id === id) return world.pois[i];
+    }
+    return null;
+  }
+
+  /* ===================== 4. POINTS OF INTEREST ======================== */
+
+  var COL = {
+    wood: 0x6b4a33, woodDark: 0x503526, wall: 0x8f7350, roof: 0x5e4531,
+    stone: 0x75767e, stoneDark: 0x54555c, slate: 0x3f4652, sealed: 0x1a1a20,
+    coal: 0x2a2018, monolith: 0x7b7e88
+  };
+
+  function buildVillage(acc, rng) {
+    var v = poiById('village');
+    var y = v.y, cx = v.x, cz = v.z;
+
+    /* fire pit (old Maren's spot) */
+    for (var i = 0; i < 9; i++) {
+      var a = (i / 9) * Math.PI * 2;
+      pushGeom(acc, GEO.box, COL.stone,
+        mat(cx + Math.cos(a) * 1.15, y + 0.18, cz + Math.sin(a) * 1.15,
+            0.46, 0.34, 0.32, a, 0, 0));
+    }
+    pushGeom(acc, GEO.cyl, COL.coal, mat(cx, y + 0.07, cz, 1.9, 0.14, 1.9, 0));
+
+    /* three huts ringing the pit */
+    var hutAngles = [0.7, 2.8, 4.9];
+    for (i = 0; i < hutAngles.length; i++) {
+      var ha = hutAngles[i];
+      var hx = cx + Math.cos(ha) * 7.2, hz = cz + Math.sin(ha) * 7.2;
+      pushGeom(acc, GEO.cyl, COL.wall, mat(hx, y + 1.0, hz, 3.4, 2.0, 3.4, 0));
+      pushGeom(acc, GEO.cone, COL.roof, mat(hx, y + 2.75, hz, 4.7, 1.5, 4.7, ha));
+      var da = Math.atan2(cz - hz, cx - hx); // door faces the fire
+      pushGeom(acc, GEO.box, COL.woodDark,
+        mat(hx + Math.cos(da) * 1.66, y + 0.62, hz + Math.sin(da) * 1.66,
+            0.8, 1.24, 0.16, -da + Math.PI / 2, 0, 0));
+    }
+
+    /* well */
+    var wx = cx + 4.6, wz = cz - 4.2;
+    pushGeom(acc, GEO.cyl, COL.stone, mat(wx, y + 0.45, wz, 2.1, 0.9, 2.1, 0));
+    pushGeom(acc, GEO.cyl, COL.coal, mat(wx, y + 0.86, wz, 1.5, 0.1, 1.5, 0));
+    pushGeom(acc, GEO.box, COL.wood, mat(wx - 0.95, y + 1.45, wz, 0.15, 1.5, 0.15, 0));
+    pushGeom(acc, GEO.box, COL.wood, mat(wx + 0.95, y + 1.45, wz, 0.15, 1.5, 0.15, 0));
+    pushGeom(acc, GEO.cone, COL.roof, mat(wx, y + 2.5, wz, 2.7, 0.75, 2.7, 0.4));
+
+    /* fence run along the south approach, with a gate gap */
+    function fenceRun(x0, z0, x1, z1) {
+      var dx = x1 - x0, dz = z1 - z0;
+      var len = Math.sqrt(dx * dx + dz * dz);
+      var n = Math.max(2, Math.round(len / 1.5));
+      var yaw = Math.atan2(dx, dz);
+      for (var k = 0; k <= n; k++) {
+        var t = k / n;
+        var px = x0 + dx * t, pz = z0 + dz * t;
+        pushGeom(acc, GEO.box, COL.wood,
+          mat(px, terrainH(px, pz) + 0.55, pz, 0.14, 1.1, 0.14, 0));
+      }
+      var mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+      pushGeom(acc, GEO.box, COL.wood,
+        mat(mx, terrainH(mx, mz) + 0.88, mz, 0.09, 0.09, len, yaw, 0, 0));
+    }
+    fenceRun(cx - 10.5, cz + 8.5, cx - 2.2, cz + 10.5);
+    fenceRun(cx + 2.2, cz + 10.5, cx + 10.5, cz + 8.5);
+  }
+
+  function buildTower(acc) {
+    var p = poiById('tower');
+    var y = p.y, x = p.x, z = p.z;
+    pushGeom(acc, GEO.cyl, COL.stoneDark, mat(x, y + 4.5, z, 5.2, 9.0, 5.2, 0));
+    pushGeom(acc, GEO.cyl, COL.stone, mat(x, y + 3.0, z, 5.5, 0.3, 5.5, 0));   // band
+    pushGeom(acc, GEO.cyl, COL.stone, mat(x, y + 6.2, z, 5.5, 0.3, 5.5, 0));   // band
+    pushGeom(acc, GEO.cone, COL.slate, mat(x, y + 10.2, z, 6.6, 2.4, 6.6, 0));
+    pushGeom(acc, GEO.box, COL.sealed, mat(x, y + 1.05, z + 2.55, 1.25, 2.1, 0.28, 0)); // the seal
+  }
+
+  function buildStones(acc, rng) {
+    var p = poiById('stones');
+    var y = p.y, n = 7;
+    for (var i = 0; i < n; i++) {
+      var a = (i / n) * Math.PI * 2;
+      var sx = p.x + Math.cos(a) * 5.6, sz = p.z + Math.sin(a) * 5.6;
+      var h = 2.7 + rng() * 1.1;
+      pushGeom(acc, GEO.box, COL.monolith,
+        mat(sx, y + h / 2, sz, 0.95, h, 0.6, a + rng() * 0.4,
+            (rng() - 0.5) * 0.14, (rng() - 0.5) * 0.14));
+    }
+    pushGeom(acc, GEO.box, COL.stoneDark, mat(p.x, y + 0.28, p.z, 2.4, 0.56, 1.7, 0.5));
+  }
+
+  function buildArch(acc, rng) {
+    var p = poiById('arch');
+    var y = p.y;
+    pushGeom(acc, GEO.box, COL.stone, mat(p.x - 2.6, y + 2.1, p.z, 1.25, 4.2, 1.25, 0.08));
+    pushGeom(acc, GEO.box, COL.stone, mat(p.x + 2.6, y + 1.4, p.z, 1.25, 2.8, 1.25, -0.05)); // broken side
+    pushGeom(acc, GEO.box, COL.stoneDark,
+      mat(p.x - 0.6, y + 4.45, p.z, 4.6, 0.9, 1.35, 0, 0, 0.12));            // tilted lintel
+    pushGeom(acc, GEO.box, COL.stoneDark,
+      mat(p.x + 3.4, y + 0.35, p.z + 1.7, 2.1, 0.7, 1.2, 0.7, 0, 0.2));      // fallen slab
+    for (var i = 0; i < 5; i++) {
+      pushGeom(acc, GEO.box, COL.stone,
+        mat(p.x + (rng() - 0.5) * 8, y + 0.2, p.z + (rng() - 0.5) * 8,
+            0.5 + rng() * 0.5, 0.4, 0.5 + rng() * 0.4, rng() * 3));
+    }
+  }
+
+  /* ===================== 5. BIOME SCATTER (InstancedMesh) ============= */
+
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* Baked vertex-colored scatter geometries (one merged geometry each,
+   * so one InstancedMesh == one draw call per species). */
+  function makeScatterGeos() {
+    var out = {};
+    var acc;
+
+    acc = beginMerge();  // pine: trunk + two canopy cones
+    pushGeom(acc, GEO.cyl, COL.wood, mat(0, 0.55, 0, 0.5, 1.1, 0.5, 0));
+    pushGeom(acc, GEO.cone, 0x2f5d3a, mat(0, 1.85, 0, 2.6, 2.2, 2.6, 0));
+    pushGeom(acc, GEO.cone, 0x386842, mat(0, 3.15, 0, 1.8, 1.7, 1.8, 0.5));
+    out.pine = endMerge(acc, 'pine').geometry;
+
+    acc = beginMerge();  // birch: pale trunk + ellipsoid canopy
+    pushGeom(acc, GEO.cyl, 0xdfe0d6, mat(0, 1.0, 0, 0.32, 2.0, 0.32, 0));
+    pushGeom(acc, GEO.ico, 0x86a84e, mat(0, 2.6, 0, 1.25, 1.5, 1.25, 0.4));
+    out.birch = endMerge(acc, 'birch').geometry;
+
+    acc = beginMerge();  // rock: white-baked, tinted per instance
+    pushGeom(acc, GEO.ico, 0xffffff, mat(0, 0.35, 0, 1, 0.8, 1, 0));
+    out.rock = endMerge(acc, 'rock').geometry;
+
+    acc = beginMerge();  // grass tuft
+    pushGeom(acc, GEO.cone, 0x5b8a3c, mat(0, 0.22, 0, 0.5, 0.45, 0.5, 0));
+    pushGeom(acc, GEO.cone, 0x6f9a44, mat(0.16, 0.18, 0.1, 0.38, 0.36, 0.38, 1.2));
+    out.tuft = endMerge(acc, 'tuft').geometry;
+
+    return out;
+  }
+
+  function insideRegion(r, x, z) {
+    if (r.kind === 'circle') {
+      var dx = x - r.x, dz = z - r.z;
+      return dx * dx + dz * dz <= r.r * r.r;
+    }
+    if (r.kind === 'ring') {
+      var dx2 = x - r.x, dz2 = z - r.z;
+      var d2 = dx2 * dx2 + dz2 * dz2;
+      return d2 >= r.rMin * r.rMin && d2 <= r.rMax * r.rMax;
+    }
+    if (r.kind === 'zband') return z >= r.zMin && z <= r.zMax;
+    return false;
+  }
+
+  function regionBounds(r, half) {
+    if (r.kind === 'circle') return [r.x - r.r, r.x + r.r, r.z - r.r, r.z + r.r];
+    if (r.kind === 'ring') return [r.x - r.rMax, r.x + r.rMax, r.z - r.rMax, r.z + r.rMax];
+    return [-half, half, r.zMin, r.zMax];
+  }
+
+  function inAnyPoi(x, z, margin) {
+    for (var i = 0; i < world.pois.length; i++) {
+      var p = world.pois[i];
+      var dx = x - p.x, dz = z - p.z;
+      var r = p.radius + margin;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    return false;
+  }
+
+  function buildScatter(scene) {
+    var rng = mulberry32(D.seed);
+    var geos = makeScatterGeos();
+    var half = T.size / 2 - 4;
+    var placed = { pine: [], birch: [], rock: [], tuft: [] };
+
+    for (var b = 0; b < D.biomes.length; b++) {
+      var biome = D.biomes[b];
+      for (var s = 0; s < biome.scatter.length; s++) {
+        var rule = biome.scatter[s];
+        var bounds = regionBounds(biome.region, half);
+        var accepted = 0, attempts = 0, maxAttempts = rule.count * 6;
+        var tint = new THREE.Color(rule.tint == null ? 0xffffff : rule.tint);
+        while (accepted < rule.count && attempts < maxAttempts) {
+          attempts++;
+          var x = bounds[0] + rng() * (bounds[1] - bounds[0]);
+          var z = bounds[2] + rng() * (bounds[3] - bounds[2]);
+          if (Math.abs(x) > half || Math.abs(z) > half) continue;
+          if (!insideRegion(biome.region, x, z)) continue;
+          if (inAnyPoi(x, z, 1.5)) continue;
+          var h = terrainH(x, z);
+          if (h < (rule.minH == null ? -1e9 : rule.minH)) continue;
+          if (h > (rule.maxH == null ? 1e9 : rule.maxH)) continue;
+          if (slopeAt(x, z) > (rule.maxSlope == null ? 1e9 : rule.maxSlope)) continue;
+          var sc = rule.minScale + rng() * (rule.maxScale - rule.minScale);
+          var j = 1 - (rule.jitter || 0) * rng();
+          placed[rule.mesh].push({
+            x: x, y: h, z: z, s: sc, ry: rng() * Math.PI * 2,
+            r: tint.r * j, g: tint.g * j, b: tint.b * j
+          });
+          accepted++;
+        }
+      }
+    }
+
+    var kinds = ['pine', 'birch', 'rock', 'tuft'];
+    var tmpC = new THREE.Color();
+    var drawCalls = 0;
+    for (var k = 0; k < kinds.length; k++) {
+      var kind = kinds[k];
+      var list = placed[kind];
+      if (!list.length) continue;
+      var mesh = new THREE.InstancedMesh(
+        geos[kind],
+        new THREE.MeshLambertMaterial({ vertexColors: true }),
+        list.length
+      );
+      for (var i = 0; i < list.length; i++) {
+        var it = list[i];
+        mesh.setMatrixAt(i, mat(it.x, it.y, it.z, it.s, it.s, it.s, it.ry));
+        mesh.setColorAt(i, tmpC.setRGB(it.r, it.g, it.b));
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.frustumCulled = false;  // instances span the world; skip bad sphere cull
+      mesh.name = 'ef-scatter-' + kind;
+      scene.add(mesh);
+      drawCalls++;
+    }
+    console.log('[EF.world] scatter: ' +
+      kinds.map(function (kk) { return kk + '=' + placed[kk].length; }).join(' ') +
+      ' in ' + drawCalls + ' draw calls');
+  }
+
+  /* ===================== 6. SKY / DAY-NIGHT ============================ */
+
+  var SKY_R = 100;
+  var dayLength = 240; // seconds per full day
+  var sky = null, skyGeo = null, skyMix = null;
+  var sunMesh = null, moonMesh = null, stars = null, starMat = null;
+  var dirLight = null, hemiLight = null;
+  var scene = null;
+
+  /* palette keyframes: [t, top, horizon, fog] */
+  var PAL_SRC = [
+    [0.00, 0x0a1020, 0x141e30, 0x101823],
+    [0.20, 0x121a2e, 0x3a3550, 0x232434],
+    [0.27, 0x35507a, 0xe08b52, 0x8f6b58],
+    [0.35, 0x4f7fc0, 0xbcd4e6, 0x9db8c6],
+    [0.50, 0x3f74c4, 0xcfe3ee, 0xaac4d0],
+    [0.68, 0x4a6fae, 0xd9c9a8, 0xb0b3a8],
+    [0.75, 0x314064, 0xe07b46, 0x7d5e55],
+    [0.82, 0x141c32, 0x4a3a56, 0x2c2c3e],
+    [0.90, 0x0a1020, 0x141e30, 0x101823],
+    [1.00, 0x0a1020, 0x141e30, 0x101823]
+  ];
+  var PAL = [];
+  for (var pi = 0; pi < PAL_SRC.length; pi++) {
+    PAL.push({
+      t: PAL_SRC[pi][0],
+      top: new THREE.Color(PAL_SRC[pi][1]),
+      hor: new THREE.Color(PAL_SRC[pi][2]),
+      fog: new THREE.Color(PAL_SRC[pi][3])
+    });
+  }
+  var curTop = new THREE.Color(), curHor = new THREE.Color(), curFog = new THREE.Color();
+  var sunColor = new THREE.Color(), _warm = new THREE.Color(0xffe2b0),
+      _amber = new THREE.Color(0xff9a55), _moonlight = new THREE.Color(0x93a7c8);
+
+  function samplePalette(t) {
+    var i = 0;
+    while (i < PAL.length - 2 && t > PAL[i + 1].t) i++;
+    var a = PAL[i], b = PAL[i + 1];
+    var f = (t - a.t) / (b.t - a.t);
+    curTop.copy(a.top).lerp(b.top, f);
+    curHor.copy(a.hor).lerp(b.hor, f);
+    curFog.copy(a.fog).lerp(b.fog, f);
+  }
+
+  function buildSky(sc) {
+    sky = new THREE.Group();
+    sky.name = 'ef-sky';
+
+    skyGeo = new THREE.SphereGeometry(SKY_R, 16, 10);
+    var count = skyGeo.attributes.position.count;
+    skyGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    skyMix = new Float32Array(count);
+    for (var i = 0; i < count; i++) {
+      skyMix[i] = smoothstep(-0.05, 0.45, skyGeo.attributes.position.getY(i) / SKY_R);
+    }
+    var dome = new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({
+      vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false
+    }));
+    dome.renderOrder = -10;
+    sky.add(dome);
+
+    sunMesh = new THREE.Mesh(new THREE.SphereGeometry(3.4, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffd98a, fog: false }));
+    moonMesh = new THREE.Mesh(new THREE.SphereGeometry(2.4, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0xd7e2f2, fog: false }));
+    sky.add(sunMesh, moonMesh);
+
+    var starCount = 350;
+    var sp = new Float32Array(starCount * 3);
+    var rng = mulberry32(D.seed + 99);
+    for (i = 0; i < starCount; i++) {
+      var a = rng() * Math.PI * 2, el = Math.asin(rng()); // upper hemisphere
+      sp[i * 3] = Math.cos(a) * Math.cos(el) * 97;
+      sp[i * 3 + 1] = Math.sin(el) * 97;
+      sp[i * 3 + 2] = Math.sin(a) * Math.cos(el) * 97;
+    }
+    var sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+    starMat = new THREE.PointsMaterial({
+      color: 0xffffff, size: 1.6, sizeAttenuation: false,
+      transparent: true, opacity: 0, fog: false, depthWrite: false
+    });
+    stars = new THREE.Points(sg, starMat);
+    stars.renderOrder = -9;
+    sky.add(stars);
+
+    sc.add(sky);
+
+    /* borrow the engine's lights rather than adding shader cost */
+    sc.traverse(function (o) {
+      if (o.isDirectionalLight) dirLight = o;
+      if (o.isHemisphereLight) hemiLight = o;
+    });
+  }
+
+  world.getTimePhase = function () {
+    var t = world.time01;
+    if (t >= 0.22 && t < 0.32) return 'dawn';
+    if (t >= 0.32 && t < 0.70) return 'day';
+    if (t >= 0.70 && t < 0.80) return 'dusk';
+    return 'night';
+  };
+  world.setTime01 = function (t) { world.time01 = ((t % 1) + 1) % 1; };
+  world.setDayLength = function (s) { if (s > 0) dayLength = s; };
+
+  var _sunDir = new THREE.Vector3();
+  function updateSky(dt) {
+    world.time01 = (world.time01 + dt / dayLength) % 1;
+    var t = world.time01;
+    var th = (t - 0.25) * Math.PI * 2;         // 0.25 = sunrise, 0.5 = noon
+    var sinEl = Math.sin(th);
+    var dayF = smoothstep(-0.06, 0.16, sinEl);
+
+    samplePalette(t);
+
+    /* dome vertex recolor (187 verts; write in place, no allocation) */
+    var col = skyGeo.attributes.color;
+    var arr = col.array;
+    for (var i = 0; i < skyMix.length; i++) {
+      var f = skyMix[i];
+      arr[i * 3] = curHor.r + (curTop.r - curHor.r) * f;
+      arr[i * 3 + 1] = curHor.g + (curTop.g - curHor.g) * f;
+      arr[i * 3 + 2] = curHor.b + (curTop.b - curHor.b) * f;
+    }
+    col.needsUpdate = true;
+
+    /* fog + clear color sync */
+    if (scene.fog) {
+      scene.fog.color.copy(curFog);
+      scene.fog.near = lerp(14, 18, dayF);
+      scene.fog.far = lerp(46, 60, dayF);   // documented deviation, see notes
+    }
+    if (scene.background && scene.background.isColor) scene.background.copy(curFog);
+
+    /* sun / moon transit */
+    _sunDir.set(Math.cos(th), sinEl, 0.28).normalize();
+    sunMesh.position.set(_sunDir.x * 88, _sunDir.y * 88, _sunDir.z * 88);
+    moonMesh.position.set(-_sunDir.x * 88, -_sunDir.y * 88, -_sunDir.z * 88);
+    sunMesh.visible = sinEl > -0.12;
+    moonMesh.visible = sinEl < 0.12;
+    starMat.opacity = 0.9 * (1 - smoothstep(-0.18, -0.02, sinEl));
+
+    /* drive the engine's lights */
+    if (dirLight) {
+      if (dayF > 0.03) {
+        sunColor.copy(_amber).lerp(_warm, smoothstep(0.0, 0.5, sinEl));
+        dirLight.color.copy(sunColor);
+        dirLight.position.set(_sunDir.x * 30, Math.max(2, _sunDir.y * 30), _sunDir.z * 30);
+        dirLight.intensity = 0.12 + 0.62 * dayF;
+      } else {
+        dirLight.color.copy(_moonlight);
+        dirLight.position.set(-_sunDir.x * 30, Math.max(4, -_sunDir.y * 30), -_sunDir.z * 30);
+        dirLight.intensity = 0.14;
+      }
+    }
+    if (hemiLight) hemiLight.intensity = 0.28 + 0.62 * dayF;
+
+    /* dome follows the camera on x/z so the horizon never slides */
+    var cam = EF.engine.camera.object;
+    sky.position.set(cam.position.x, 0, cam.position.z);
+  }
+
+  /* ===================== 7. WATER + FIRE =============================== */
+
+  var water = null, waterBase = null, flame = null;
+
+  function buildWater(sc) {
+    var lake = poiById('lake');
+    if (!lake) return;
+    var p = D.pois.filter(function (q) { return q.id === 'lake'; })[0];
+    var geo = new THREE.CircleGeometry(lake.radius - 1.2, 40);
+    geo.rotateX(-Math.PI / 2);
+    water = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      color: 0x2e5d6e, transparent: true, opacity: 0.82
+    }));
+    water.position.set(lake.x, lake.y + (p.water || 1.2), lake.z);
+    water.name = 'ef-water';
+    waterBase = new Float32Array(geo.attributes.position.array); // snapshot
+    sc.add(water);
+  }
+
+  function buildFlame(sc) {
+    var v = poiById('village');
+    flame = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.95, 7),
+      new THREE.MeshBasicMaterial({ color: 0xff9c3f, transparent: true, opacity: 0.92 }));
+    flame.position.set(v.x, v.y + 0.6, v.z);
+    flame.name = 'ef-flame';
+    sc.add(flame);
+  }
+
+  function updateWaterFire(elapsed) {
+    if (water) {
+      var pos = water.geometry.attributes.position;
+      var arr = pos.array;
+      for (var i = 0; i < pos.count; i++) {
+        var bx = waterBase[i * 3], bz = waterBase[i * 3 + 2];
+        arr[i * 3 + 1] = Math.sin(elapsed * 1.6 + bx * 0.55 + bz * 0.4) * 0.06;
+      }
+      pos.needsUpdate = true;
+    }
+    if (flame) {
+      var f = 0.85 + 0.22 * Math.abs(Math.sin(elapsed * 7.1)) + 0.08 * Math.sin(elapsed * 13.7);
+      flame.scale.set(1 + 0.12 * Math.sin(elapsed * 11.3), f, 1 + 0.12 * Math.cos(elapsed * 9.7));
+    }
+  }
+
+  /* ===================== 8. PICKUPS ==================================== */
+
+  var pickups = [];
+  var pickupGeo = null;
+  var pickupMats = {};
+  var playerObj = null;
+
+  world.setPlayerObject = function (obj) { playerObj = obj || null; };
+
+  function pickupMat(itemId) {
+    var hex = D.pickups.colors[itemId] != null ? D.pickups.colors[itemId]
+                                               : D.pickups.colors['default'];
+    var key = String(hex);
+    if (!pickupMats[key]) {
+      pickupMats[key] = new THREE.MeshLambertMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.35 });
+    }
+    return pickupMats[key];
+  }
+
+  world.spawnPickup = function (itemId, x, z) {
+    if (!world.ready) { console.warn('[EF.world] spawnPickup before world ready'); return null; }
+    if (!pickupGeo) pickupGeo = new THREE.OctahedronGeometry(0.28, 0);
+    var m = new THREE.Mesh(pickupGeo, pickupMat(itemId));
+    var baseY = terrainH(x, z) + 0.65;
+    m.position.set(x, baseY, z);
+    scene.add(m);
+    var rec = { item: itemId, mesh: m, baseY: baseY, phase: Math.random() * 6.28, dead: false };
+    pickups.push(rec);
+    return {
+      remove: function () { rec.dead = true; }
+    };
+  };
+
+  function updatePickups(elapsed) {
+    for (var i = pickups.length - 1; i >= 0; i--) {
+      var p = pickups[i];
+      if (p.dead) {
+        scene.remove(p.mesh);
+        pickups.splice(i, 1);
+        continue;
+      }
+      p.mesh.rotation.y = elapsed * 2.2 + p.phase;
+      p.mesh.position.y = p.baseY + Math.sin(elapsed * 2 + p.phase) * D.pickups.bobHeight;
+      if (playerObj) {
+        var dx = playerObj.position.x - p.mesh.position.x;
+        var dz = playerObj.position.z - p.mesh.position.z;
+        var r = D.pickups.radius;
+        if (dx * dx + dz * dz < r * r) {
+          scene.remove(p.mesh);
+          pickups.splice(i, 1);
+          /* SS4: canonical name is loot:collected (renamed from item:pickup) */
+          EF.bus.emit('loot:collected', { item: p.item, count: 1 });
+          EF.bus.emit('audio:play', { sfx: 'pickup' });
+        }
+      }
+    }
+  }
+
+  /* ===================== 9. BOOT + TICK ================================ */
+
+  EF.bus.on('game:booted', function (p) {
+    if (p && p.__selfTest) return;
+    if (world.ready) return;
+    scene = p.scene;
+
+    /* Contract SS5: the canonical ground sampler is terrainH. */
+    EF.engine.setGroundSampler(terrainH);
+
+    buildTerrain(scene);
+    buildSky(scene);
+
+    var acc = beginMerge();
+    var rng = mulberry32(D.seed + 7);
+    buildVillage(acc, rng);
+    buildTower(acc);
+    buildStones(acc, rng);
+    buildArch(acc, rng);
+    var poiMesh = endMerge(acc, 'ef-pois');
+    scene.add(poiMesh);
+
+    buildWater(scene);
+    buildFlame(scene);
+    buildScatter(scene);
+
+    world.ready = true;
+    console.log('[EF.world] world ready — pois: ' +
+      world.pois.map(function (q) { return q.id; }).join(', '));
+  });
+
+  EF.bus.on('game:tick', function (t) {
+    if (!world.ready || (t && t.__selfTest)) return;
+    updateSky(t.dt);
+    updateWaterFire(t.elapsed);
+    updatePickups(t.elapsed);
+  });
+})();
+</script>
+<!-- ================= data/weapons.js        Cycle 2  (Combat) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL — data/weapons.js  (Combat dept, Cycle 2)
+ * Five weapons across the schema. Grip convention: every model is built with
+ * the GRIP AT THE ORIGIN and the business end extending along +Y. player.js
+ * parents the built group under the right-hand attach point; the hand does
+ * all the swinging.
+ *
+ * Feel notes (Definition of Done, one sentence each):
+ *  - dagger:     you flick it — instant, cheap, tiny reach, fishing for crits.
+ *  - sword:      the honest middle — quick enough to react with, wide enough
+ *                to trust.
+ *  - axe:        a beat of commitment, then a heavy bite that shoves things
+ *                back.
+ *  - greatsword: you wind up like a door closing and everything in front of
+ *                you regrets standing there.
+ *  - mace:       short, slow, and rude — smallest arc, biggest shove.
+ *
+ * Depends on: THREE (r128). No engine dependency; pure data + factories.
+ * Delivery: raw .js text, ASCII quotes only (Contract v1.1 §2.5).
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  EF.data = EF.data || {};
+
+  function deg(d) { return d * Math.PI / 180; }
+
+  /* ---- tiny mesh helpers (build-time only, never per-frame) ---- */
+  function lam(hex) { return new THREE.MeshLambertMaterial({ color: hex }); }
+  function box(w, h, d, hex, x, y, z) {
+    var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), lam(hex));
+    m.position.set(x || 0, y || 0, z || 0);
+    return m;
+  }
+  function cyl(rTop, rBot, h, hex, x, y, z, seg) {
+    var m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, h, seg || 6), lam(hex));
+    m.position.set(x || 0, y || 0, z || 0);
+    return m;
+  }
+
+  var STEEL = 0xb8c2cc, DARKSTEEL = 0x77808a, WOOD = 0x6b4a2b,
+      LEATHER = 0x4a3320, BRASS = 0xc9a24b, IRON = 0x555c63;
+
+  /* ---- model factories ---- */
+  function buildDagger() {
+    var g = new THREE.Group();
+    g.add(box(0.045, 0.16, 0.045, LEATHER, 0, 0.02, 0));       // grip
+    g.add(box(0.16, 0.03, 0.05, BRASS, 0, 0.11, 0));           // guard
+    var blade = box(0.055, 0.34, 0.014, STEEL, 0, 0.29, 0);
+    blade.scale.set(1, 1, 1);
+    g.add(blade);
+    g.add(box(0.03, 0.06, 0.02, STEEL, 0, 0.475, 0));          // tip taper
+    return g;
+  }
+
+  function buildSword() {
+    var g = new THREE.Group();
+    g.add(box(0.05, 0.22, 0.05, LEATHER, 0, 0.03, 0));
+    g.add(new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 5), lam(BRASS))); // pommel at origin-ish
+    g.children[1].position.set(0, -0.09, 0);
+    g.add(box(0.26, 0.035, 0.06, BRASS, 0, 0.155, 0));
+    g.add(box(0.075, 0.72, 0.018, STEEL, 0, 0.53, 0));
+    g.add(box(0.04, 0.08, 0.016, STEEL, 0, 0.92, 0));
+    return g;
+  }
+
+  function buildAxe() {
+    var g = new THREE.Group();
+    g.add(cyl(0.028, 0.034, 0.95, WOOD, 0, 0.38, 0));
+    // head: broad wedge offset to +X
+    g.add(box(0.30, 0.26, 0.05, IRON, 0.16, 0.78, 0));
+    g.add(box(0.10, 0.34, 0.045, DARKSTEEL, 0.30, 0.78, 0));   // cutting edge
+    g.add(box(0.08, 0.10, 0.06, IRON, -0.07, 0.78, 0));        // back spike
+    return g;
+  }
+
+  function buildGreatsword() {
+    var g = new THREE.Group();
+    g.add(box(0.055, 0.34, 0.055, LEATHER, 0, 0.05, 0));       // two-hand grip
+    g.add(box(0.09, 0.06, 0.09, BRASS, 0, -0.14, 0));          // pommel block
+    g.add(box(0.42, 0.045, 0.07, DARKSTEEL, 0, 0.26, 0));      // big crossguard
+    g.add(box(0.13, 1.15, 0.022, STEEL, 0, 0.86, 0));
+    g.add(box(0.06, 0.14, 0.02, STEEL, 0, 1.49, 0));
+    return g;
+  }
+
+  function buildMace() {
+    var g = new THREE.Group();
+    g.add(cyl(0.03, 0.035, 0.62, WOOD, 0, 0.24, 0));
+    var head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 5), lam(IRON));
+    head.position.set(0, 0.62, 0);
+    g.add(head);
+    // studs
+    var i, s;
+    for (i = 0; i < 6; i++) {
+      s = box(0.05, 0.05, 0.05, DARKSTEEL, 0, 0.62, 0);
+      s.position.x = Math.cos(i * Math.PI / 3) * 0.15;
+      s.position.z = Math.sin(i * Math.PI / 3) * 0.15;
+      s.rotation.y = -i * Math.PI / 3;
+      g.add(s);
+    }
+    return g;
+  }
+
+  /* ---- weapon schema ----
+   * reach:   metres from player origin to arc edge
+   * arc:     total horizontal swing arc (radians)
+   * windup / active / recover:  seconds; hits only land during 'active'
+   * damage:  [min, max] before level multiplier
+   * stamina: cost per swing
+   * knockback: impulse applied to hit enemies (m/s)
+   * critBonus: added to the level-derived crit chance for this weapon
+   */
+  var DEFS = {
+    dagger: {
+      id: 'dagger', name: 'Rustpick Dagger',
+      reach: 1.6, arc: deg(70),
+      windup: 0.08, active: 0.10, recover: 0.14,
+      damage: [3, 5], stamina: 7, knockback: 1.2, critBonus: 0.10,
+      sfx: 'swing.light', build: buildDagger
+    },
+    sword: {
+      id: 'sword', name: 'Pinewatch Sword',
+      reach: 2.2, arc: deg(95),
+      windup: 0.15, active: 0.12, recover: 0.22,
+      damage: [5, 8], stamina: 12, knockback: 2.4, critBonus: 0.02,
+      sfx: 'swing.mid', build: buildSword
+    },
+    axe: {
+      id: 'axe', name: 'Forester Axe',
+      reach: 2.0, arc: deg(110),
+      windup: 0.24, active: 0.12, recover: 0.28,
+      damage: [7, 11], stamina: 16, knockback: 3.6, critBonus: 0.03,
+      sfx: 'swing.mid', build: buildAxe
+    },
+    greatsword: {
+      id: 'greatsword', name: 'Emberfell Greatsword',
+      reach: 2.9, arc: deg(150),
+      windup: 0.36, active: 0.16, recover: 0.40,
+      damage: [11, 16], stamina: 24, knockback: 4.8, critBonus: 0.0,
+      sfx: 'swing.heavy', build: buildGreatsword
+    },
+    mace: {
+      id: 'mace', name: 'Toll Mace',
+      reach: 1.9, arc: deg(75),
+      windup: 0.28, active: 0.10, recover: 0.32,
+      damage: [9, 13], stamina: 18, knockback: 6.0, critBonus: 0.0,
+      sfx: 'swing.heavy', build: buildMace
+    }
+  };
+
+  var ORDER = ['dagger', 'sword', 'axe', 'greatsword', 'mace'];
+
+  EF.data.weapons = {
+    order: ORDER,
+    get: function (id) { return DEFS[id] || null; },
+    build: function (id) {
+      var d = DEFS[id];
+      if (!d) { console.warn('[EF.weapons] unknown weapon "' + id + '"'); return null; }
+      return d.build();
+    }
+  };
+})();
+</script>
+<!-- ================= data/enemyTypes.js     Cycle 2  (Combat) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL — data/enemyTypes.js  (Combat dept, Cycle 2)
+ * Four enemy types + reusable low-poly mesh factories, one AI wrinkle each.
+ *
+ *   wolf      — circles the player, darts in.        (pack skirmisher)
+ *   skeleton  — slow, tanky, heavy telegraph.        (attrition)
+ *   bandit    — keeps distance, then lunges.          (kiter)
+ *   troll     — rare, huge HP, slow wander, big hit.  (miniboss)
+ *
+ * Each factory returns { group, parts } where `parts` names the nodes
+ * enemies.js animates (leg pivots for the walk cycle, a `telegraph` node it
+ * rotates during wind-up). Grip/leg convention: models stand on y=0, face +Z
+ * before enemies.js applies yaw. No engine dependency; pure data + factories.
+ * Delivery: raw .js text, ASCII quotes only (Contract v1.1 §2.5).
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  EF.data = EF.data || {};
+
+  function lam(hex) { return new THREE.MeshLambertMaterial({ color: hex }); }
+  function box(w, h, d, mat, x, y, z) {
+    var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x || 0, y || 0, z || 0);
+    return m;
+  }
+  function pivot(x, y, z) {
+    var g = new THREE.Group();
+    g.position.set(x || 0, y || 0, z || 0);
+    return g;
+  }
+
+  /* shared materials (built once, reused across every instance in the pool) */
+  var MAT = {
+    wolfFur:  lam(0x53504e),
+    wolfDark: lam(0x393735),
+    bone:     lam(0xd9d4c4),
+    boneDark: lam(0x9c988a),
+    banditCloak: lam(0x3a2d24),
+    banditSkin:  lam(0xc79a70),
+    steel:    lam(0xb8c2cc),
+    trollHide: lam(0x5c6e46),
+    trollDark: lam(0x44532f),
+    club:     lam(0x6b4a2b),
+    eye:      lam(0xffcf5a)
+  };
+
+  /* -------------------------------------------------------------- wolf --- */
+  function buildWolf() {
+    var g = new THREE.Group();
+    var body = box(1.30, 0.60, 0.55, MAT.wolfFur, 0, 0.70, 0);
+    g.add(body);
+    // head faces +Z (forward)
+    var head = box(0.46, 0.42, 0.46, MAT.wolfFur, 0, 0.86, 0.78);
+    var snout = box(0.22, 0.20, 0.26, MAT.wolfDark, 0, 0.80, 1.02);
+    var earL = box(0.10, 0.16, 0.06, MAT.wolfDark, -0.14, 1.10, 0.72);
+    var earR = box(0.10, 0.16, 0.06, MAT.wolfDark, 0.14, 1.10, 0.72);
+    g.add(head); g.add(snout); g.add(earL); g.add(earR);
+    var tail = box(0.16, 0.16, 0.52, MAT.wolfDark, 0, 0.78, -0.80);
+    tail.rotation.x = 0.5; g.add(tail);
+    // four leg pivots at the hips, legs hang -Y
+    function leg(x, z) {
+      var p = pivot(x, 0.44, z);
+      p.add(box(0.16, 0.44, 0.16, MAT.wolfDark, 0, -0.22, 0));
+      g.add(p); return p;
+    }
+    var fl = leg(-0.34, 0.42), fr = leg(0.34, 0.42),
+        bl = leg(-0.34, -0.42), br = leg(0.34, -0.42);
+    return { group: g, parts: { legs: [fl, fr, bl, br], head: head, telegraph: head } };
+  }
+
+  /* ---------------------------------------------------------- skeleton --- */
+  function buildSkeleton() {
+    var g = new THREE.Group();
+    g.add(box(0.42, 0.10, 0.26, MAT.bone, 0, 1.55, 0));        // shoulders
+    // ribcage as stacked thin slats
+    var i;
+    for (i = 0; i < 3; i++) g.add(box(0.36, 0.06, 0.22, MAT.boneDark, 0, 1.30 - i * 0.16, 0));
+    g.add(box(0.10, 0.44, 0.10, MAT.bone, 0, 1.10, 0));        // spine
+    g.add(box(0.20, 0.16, 0.16, MAT.bone, 0, 0.94, 0));        // pelvis
+    var skull = box(0.30, 0.34, 0.30, MAT.bone, 0, 1.82, 0);
+    g.add(skull);
+    g.add(box(0.06, 0.06, 0.04, MAT.eye, -0.07, 1.84, 0.16));  // eye glints
+    g.add(box(0.06, 0.06, 0.04, MAT.eye, 0.07, 1.84, 0.16));
+    function limb(x, y, len, mat) {
+      var p = pivot(x, y, 0);
+      p.add(box(0.12, len, 0.12, mat, 0, -len / 2, 0));
+      g.add(p); return p;
+    }
+    var armL = limb(-0.30, 1.52, 0.70, MAT.bone),
+        armR = limb(0.30, 1.52, 0.70, MAT.bone),
+        legL = limb(-0.14, 0.92, 0.86, MAT.boneDark),
+        legR = limb(0.14, 0.92, 0.86, MAT.boneDark);
+    return { group: g, parts: { legL: legL, legR: legR, armL: armL, armR: armR, telegraph: armR } };
+  }
+
+  /* ------------------------------------------------------------ bandit --- */
+  function buildBandit() {
+    var g = new THREE.Group();
+    var torso = box(0.62, 0.90, 0.38, MAT.banditCloak, 0, 1.20, 0);
+    g.add(torso);
+    var hood = box(0.40, 0.40, 0.40, MAT.banditCloak, 0, 1.80, 0);
+    g.add(hood);
+    g.add(box(0.24, 0.14, 0.10, MAT.banditSkin, 0, 1.72, 0.20)); // shadowed face
+    // cloak flare (widens the silhouette)
+    var flare = box(0.72, 0.50, 0.12, MAT.banditCloak, 0, 0.85, -0.14);
+    g.add(flare);
+    function limb(x, y, len, mat) {
+      var p = pivot(x, y, 0);
+      p.add(box(0.16, len, 0.16, mat, 0, -len / 2, 0));
+      g.add(p); return p;
+    }
+    var armL = limb(-0.42, 1.60, 0.72, MAT.banditCloak),
+        armR = limb(0.42, 1.60, 0.72, MAT.banditCloak),
+        legL = limb(-0.18, 0.80, 0.80, MAT.banditCloak),
+        legR = limb(0.18, 0.80, 0.80, MAT.banditCloak);
+    // dagger in right hand
+    var dag = box(0.06, 0.42, 0.05, MAT.steel, 0, -0.85, 0.06);
+    armR.add(dag);
+    return { group: g, parts: { legL: legL, legR: legR, armL: armL, armR: armR, telegraph: armR } };
+  }
+
+  /* ------------------------------------------------------------- troll --- */
+  function buildTroll() {
+    var g = new THREE.Group();
+    var torso = box(1.50, 1.60, 1.10, MAT.trollHide, 0, 2.10, 0);
+    torso.rotation.x = 0.18; g.add(torso);                     // hunched
+    var head = box(0.80, 0.72, 0.80, MAT.trollHide, 0, 3.05, 0.30);
+    g.add(head);
+    g.add(box(0.60, 0.30, 0.20, MAT.trollDark, 0, 2.90, 0.66)); // heavy brow/jaw
+    function limb(x, y, w, len, mat) {
+      var p = pivot(x, y, 0);
+      p.add(box(w, len, w, mat, 0, -len / 2, 0));
+      g.add(p); return p;
+    }
+    var armL = limb(-0.95, 2.70, 0.40, 1.50, MAT.trollHide),
+        armR = limb(0.95, 2.70, 0.40, 1.50, MAT.trollHide),
+        legL = limb(-0.42, 1.30, 0.46, 1.30, MAT.trollDark),
+        legR = limb(0.42, 1.30, 0.46, 1.30, MAT.trollDark);
+    // big club in right fist
+    var club = new THREE.Group();
+    club.add(box(0.24, 1.30, 0.24, MAT.club, 0, -1.05, 0));
+    club.add(box(0.52, 0.52, 0.52, MAT.trollDark, 0, -1.70, 0));
+    club.position.y = -1.50; armR.add(club);
+    return { group: g, parts: { legL: legL, legR: legR, armL: armL, armR: armR, telegraph: armR } };
+  }
+
+  /* -------------------------------------------------------------- defs --- *
+   * Combat reads: maxhp, contactRadius, xp, gold[], damage, attackRange,
+   * windup/strike/recover/cooldown (telegraph timing), aggro, speed, wrinkle.
+   * enemies.js reads: build, speeds, ranges, wrinkle, walkFreq, bar offset.
+   * -------------------------------------------------------------------- */
+  var DEFS = {
+    wolf: {
+      id: 'wolf', name: 'Timber Wolf', build: buildWolf,
+      maxhp: 40, contactRadius: 0.8, speed: 4.4, aggro: 17,
+      attackRange: 2.0, damage: 8, windup: 0.30, strike: 0.10, recover: 0.25, cooldown: 0.9,
+      xp: 20, gold: [5, 15], potionChance: 0.20,
+      walkFreq: 12, barY: 1.7, wrinkle: 'circle',
+      // wrinkle params
+      orbitRadius: 3.4, orbitSpeed: 1.6, lungeRange: 3.0
+    },
+    skeleton: {
+      id: 'skeleton', name: 'Risen Bones', build: buildSkeleton,
+      maxhp: 90, contactRadius: 0.55, speed: 1.9, aggro: 15,
+      attackRange: 2.1, damage: 14, windup: 0.55, strike: 0.14, recover: 0.35, cooldown: 1.3,
+      xp: 35, gold: [8, 20], potionChance: 0.30,
+      walkFreq: 5, barY: 2.15, wrinkle: 'tank'
+    },
+    bandit: {
+      id: 'bandit', name: 'Road Bandit', build: buildBandit,
+      maxhp: 55, contactRadius: 0.55, speed: 3.6, aggro: 18,
+      attackRange: 2.0, damage: 11, windup: 0.22, strike: 0.10, recover: 0.30, cooldown: 1.1,
+      xp: 30, gold: [12, 26], potionChance: 0.25,
+      walkFreq: 9, barY: 2.05, wrinkle: 'kite',
+      // wrinkle params
+      keepDistance: 6.0, lungeRange: 7.0, lungeSpeed: 11.0, lungeTime: 0.35, retreatSpeed: 4.2
+    },
+    troll: {
+      id: 'troll', name: 'Fellmoor Troll', build: buildTroll,
+      maxhp: 320, contactRadius: 1.2, speed: 2.2, aggro: 20,
+      attackRange: 3.0, damage: 28, windup: 0.80, strike: 0.18, recover: 0.55, cooldown: 1.6,
+      xp: 150, gold: [60, 120], potionChance: 0.9,
+      walkFreq: 4, barY: 3.5, wrinkle: 'wander'
+    }
+  };
+
+  /* ---- spawn roster / zones by biome ----
+   * count = how many instances live in the pool (this is the pool size per
+   * type; respawn recycles in place, never allocates). Zones are circular
+   * regions tagged by biome; if EF.world.biomeAt(x,z) exists later, enemies.js
+   * can filter by live biome, otherwise it uses these static zones. Troll is
+   * rare: a single instance with a wide, remote zone. */
+  var ROSTER = [
+    { type: 'wolf',     count: 6, biome: 'pineForest', zone: { cx: 0,   cz: -60, r: 90 } },
+    { type: 'skeleton', count: 4, biome: 'barrows',    zone: { cx: 60,  cz: -70, r: 55 } },
+    { type: 'bandit',   count: 3, biome: 'road',       zone: { cx: -50, cz: 20,  r: 70 } },
+    /* [build-03 integrator patch] old zone {cx:110, cz:-110, r:60} was centered
+     * on the exact corner of the 220x220 terrain mesh — the troll spawned off
+     * the map (playtest bug #1). Moved in-bounds; still the remote NE corner. */
+    { type: 'troll',    count: 1, biome: 'fellmoor',   zone: { cx: 80,  cz: -80, r: 24 } }
+  ];
+
+  EF.data.enemyTypes = {
+    order: ['wolf', 'skeleton', 'bandit', 'troll'],
+    roster: ROSTER,
+    get: function (id) { return DEFS[id] || null; },
+    build: function (id) {
+      var d = DEFS[id];
+      if (!d) { console.warn('[EF.enemyTypes] unknown type "' + id + '"'); return null; }
+      return d.build();
+    }
+  };
+})();
+</script>
+<!-- ================= player.js              Cycle 2  (Combat) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL — player.js  (Combat dept, Cycle 2)
+ * Owns: the player rig (grouped low-poly primitives, distinct silhouette:
+ * cloak + pauldrons), locomotion (idle/walk/run/jump/fall state machine),
+ * gravity against terrain, facing, and the weapon attach point that re-parents
+ * the equipped model on `weapon:equip`. Also owns the stamina resource.
+ *
+ * Does NOT own damage/xp/gold/level math or hp mutation — that is combat.js
+ * (Contract v1.1 §5). player.stats.hp is written ONLY by combat.js.
+ *
+ * Load order: after engine.js and data/weapons.js, before combat.js/enemies.js.
+ * Depends on: THREE (r128), EF.engine (bus/input/camera/audio/time),
+ *             EF.data.weapons. Reads EF.world.terrainH if present, else flat.
+ *
+ * A-1 note: pointerleave releases held buttons, so run is driven by analog
+ * stick magnitude (not a hold-to-sprint button). No hold/charge mechanics.
+ * Delivery: raw .js text, ASCII quotes only (Contract v1.1 §2.5).
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  if (!EF.engine) { console.error('[EF.player] engine.js must load before player.js'); return; }
+  var bus = EF.engine.bus, input = EF.engine.input;
+
+  /* flat terrain stub: prefer world terrain when it arrives, else engine
+   * ground sampler (0 in module builds), else 0. */
+  function groundAt(x, z) {
+    if (EF.world && typeof EF.world.terrainH === 'function') return EF.world.terrainH(x, z);
+    if (EF.engine && typeof EF.engine.groundAt === 'function') return EF.engine.groundAt(x, z);
+    return 0;
+  }
+
+  /* tuning */
+  var WALK_SPEED = 4.2, RUN_SPEED = 7.4;
+  var GRAVITY = 22, JUMP_VELOCITY = 8.6, JUMP_STAMINA = 10;
+  var RUN_STICK = 0.85;          // stick magnitude above this = run
+  var MOVE_DEADZONE = 0.12;
+  var STAMINA_REGEN = 16;        // per second
+
+  /* mutable stats (hp/xp/gold/lvl/dmg written by combat.js only) */
+  var stats = {
+    hp: 100, maxhp: 100,
+    st: 100, maxst: 100,
+    xp: 0, lvl: 1, xpNext: 100,
+    gold: 0, dmg: 20
+  };
+
+  /* ------------------------------------------------------------ rig ----- */
+  function lam(hex, extra) {
+    var o = { color: hex };
+    if (extra) for (var k in extra) o[k] = extra[k];
+    return new THREE.MeshLambertMaterial(o);
+  }
+  var M = {
+    tunic:    lam(0x39506e),
+    cloak:    lam(0x6a2233),
+    cloakIn:  lam(0x431622),
+    pauldron: lam(0x9aa4ad),
+    skin:     lam(0xd8a878),
+    hair:     lam(0x2c2018),
+    pants:    lam(0x3a2c1c),
+    boot:     lam(0x24190f)
+  };
+
+  function box(w, h, d, mat, x, y, z) {
+    var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x || 0, y || 0, z || 0);
+    return m;
+  }
+  function pivot(x, y, z) {
+    var g = new THREE.Group(); g.position.set(x || 0, y || 0, z || 0); return g;
+  }
+
+  var root, rig, attach;      // attach = weapon mount point (child of right forearm)
+  var parts = {};
+
+  function buildRig() {
+    root = new THREE.Group();          // world transform lives here
+    rig = new THREE.Group();           // body; bobbed/leaned locally
+    root.add(rig);
+
+    rig.add(box(0.82, 1.02, 0.46, M.tunic, 0, 1.26, 0));          // torso
+    // head
+    var head = box(0.34, 0.36, 0.34, M.skin, 0, 2.02, 0);
+    rig.add(head);
+    rig.add(box(0.36, 0.12, 0.36, M.hair, 0, 2.22, 0));           // hair cap
+    parts.head = head;
+
+    // pauldrons — angular shoulder plates give the distinct silhouette
+    var plL = box(0.30, 0.20, 0.42, M.pauldron, -0.52, 1.66, 0);
+    var plR = box(0.30, 0.20, 0.42, M.pauldron, 0.52, 1.66, 0);
+    plL.rotation.z = 0.25; plR.rotation.z = -0.25;
+    rig.add(plL); rig.add(plR);
+
+    // cloak — a tapered slab hanging off the back, sways with motion
+    var cloak = pivot(0, 1.72, -0.24);
+    var cloakMesh = box(0.78, 1.35, 0.06, M.cloak, 0, -0.62, 0);
+    var cloakLine = box(0.72, 1.28, 0.02, M.cloakIn, 0, -0.60, 0.04);
+    cloak.add(cloakMesh); cloak.add(cloakLine);
+    rig.add(cloak); parts.cloak = cloak;
+
+    // arms (shoulder pivots, upper+fore so the sword swings from the elbow-ish)
+    function arm(x) {
+      var sh = pivot(x, 1.68, 0);
+      sh.add(box(0.20, 0.80, 0.20, M.tunic, 0, -0.40, 0));
+      var hand = box(0.16, 0.16, 0.16, M.skin, 0, -0.82, 0);
+      sh.add(hand);
+      rig.add(sh); return sh;
+    }
+    parts.armL = arm(-0.54);
+    parts.armR = arm(0.54);
+
+    // legs (hip pivots)
+    function leg(x) {
+      var hip = pivot(x, 0.86, 0);
+      hip.add(box(0.22, 0.80, 0.22, M.pants, 0, -0.40, 0));
+      hip.add(box(0.24, 0.16, 0.30, M.boot, 0, -0.84, 0.04));
+      rig.add(hip); return hip;
+    }
+    parts.legL = leg(-0.22);
+    parts.legR = leg(0.22);
+
+    // weapon mount at the right hand
+    attach = pivot(0, -0.86, 0.02);
+    parts.armR.add(attach);
+    parts.attach = attach;
+
+    // soft contact shadow
+    var blob = new THREE.Mesh(
+      new THREE.CircleGeometry(0.7, 12),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 })
+    );
+    blob.rotation.x = -Math.PI / 2;
+    root.add(blob); parts.blob = blob;
+  }
+
+  /* --------------------------------------------------- weapon equip ----- */
+  var currentWeaponId = null, currentWeaponDef = null, weaponModel = null;
+
+  function equip(id) {
+    var def = EF.data.weapons.get(id);
+    if (!def) { console.warn('[EF.player] cannot equip unknown weapon "' + id + '"'); return; }
+    if (weaponModel) { attach.remove(weaponModel); weaponModel = null; }
+    weaponModel = EF.data.weapons.build(id);
+    if (weaponModel) attach.add(weaponModel);
+    currentWeaponId = id;
+    currentWeaponDef = def;
+  }
+
+  /* single path: everything equips through the pre-approved weapon:equip
+   * event (Contract v1.1 §4). Emitting it warns once until Engine Core adds
+   * it to CANONICAL_EVENTS; that is expected. */
+  bus.on('weapon:equip', function (p) {
+    if (p && p.__selfTest) return;
+    var id = p && (p.id || p.weapon);
+    if (id) equip(id);
+  });
+
+  /* ----------------------------------------------- locomotion state ----- */
+  var pstate = {
+    x: 0, y: 0, z: 8, vy: 0, yaw: Math.PI,
+    onGround: true, moving: false, speed: 0, walkPhase: 0,
+    anim: 'idle'
+  };
+
+  function trySpendStamina(cost) {
+    if (stats.st < cost) return false;
+    stats.st -= cost;
+    return true;
+  }
+
+  function alive() {
+    return !(EF.combat && EF.combat.isPlayerDead && EF.combat.isPlayerDead());
+  }
+
+  function computeMove() {
+    // engine input: move.y = +1 forward, camera-relative like the engine harness
+    var mv = input.move, mx = mv.x, my = mv.y;
+    var mag = Math.sqrt(mx * mx + my * my);
+    pstate.moving = mag > MOVE_DEADZONE && alive();
+    if (!pstate.moving) { pstate.speed = 0; return; }
+    if (mag > 1) { mx /= mag; my /= mag; mag = 1; }
+    var run = mag >= RUN_STICK;
+    var spd = run ? RUN_SPEED : WALK_SPEED;
+    pstate.speed = spd;
+
+    var yaw = EF.engine.camera.yaw;
+    var fx = -Math.sin(yaw), fz = -Math.cos(yaw);   // camera forward
+    var rx = Math.cos(yaw), rz = -Math.sin(yaw);    // camera right
+    var wx = fx * my + rx * mx;
+    var wz = fz * my + rz * mx;
+    var wlen = Math.sqrt(wx * wx + wz * wz) || 1;
+    var dt = EF.engine.time.dt;
+    pstate.x += (wx) * spd * dt;
+    pstate.z += (wz) * spd * dt;
+    /* [build-03 integrator patch, playtest bug #1] clamp to the terrain mesh
+     * (EF.worldData.terrain.size), not a hardcoded ±200 — terrainH answers
+     * analytically past the mesh edge, so the old bound let the player walk
+     * onto invisible ground. */
+    var bound = (EF.worldData && EF.worldData.terrain && EF.worldData.terrain.size)
+      ? EF.worldData.terrain.size * 0.5 - 2 : 200;
+    pstate.x = Math.max(-bound, Math.min(bound, pstate.x));
+    pstate.z = Math.max(-bound, Math.min(bound, pstate.z));
+    pstate.yaw = Math.atan2(wx / wlen, wz / wlen);
+    return run;
+  }
+
+  function jump() {
+    if (!pstate.onGround || !alive()) return;
+    if (!trySpendStamina(JUMP_STAMINA)) return;
+    pstate.vy = JUMP_VELOCITY;
+    pstate.onGround = false;
+    bus.emit('audio:play', { sfx: 'jump' });
+  }
+
+  /* small state machine: pick state, then animate that state */
+  function pickState(run) {
+    if (!pstate.onGround) return pstate.vy > 0 ? 'jump' : 'fall';
+    if (pstate.moving) return run ? 'run' : 'walk';
+    return 'idle';
+  }
+
+  function animate(dt) {
+    var a = pstate.anim;
+    var armR = parts.armR, armL = parts.armL, legL = parts.legL, legR = parts.legR;
+    var swing = EF.combat && EF.combat.getSwing ? EF.combat.getSwing() : null;
+
+    if (a === 'walk' || a === 'run') {
+      var freq = (a === 'run') ? 14 : 9;
+      var amp = (a === 'run') ? 0.9 : 0.55;
+      pstate.walkPhase += dt * freq;
+      var s = Math.sin(pstate.walkPhase) * amp;
+      legL.rotation.x = s; legR.rotation.x = -s;
+      armL.rotation.x = -s * 0.8;
+      if (!swing || !swing.active) armR.rotation.x = s * 0.8;
+      parts.cloak.rotation.x = 0.12 + Math.abs(Math.cos(pstate.walkPhase)) * 0.10;
+    } else if (a === 'jump' || a === 'fall') {
+      var tuck = a === 'jump' ? 0.5 : -0.3;
+      legL.rotation.x = tuck; legR.rotation.x = tuck * 0.6;
+      armL.rotation.x = -0.6;
+      if (!swing || !swing.active) armR.rotation.x = -0.4;
+      parts.cloak.rotation.x = a === 'fall' ? 0.45 : -0.15;
+    } else { // idle
+      pstate.walkPhase *= 0.9;
+      var breathe = Math.sin(EF.engine.time.elapsed * 1.6) * 0.04;
+      legL.rotation.x *= 0.8; legR.rotation.x *= 0.8;
+      armL.rotation.x = breathe;
+      if (!swing || !swing.active) armR.rotation.x = -breathe;
+      parts.cloak.rotation.x = 0.12 + breathe;
+    }
+
+    // combat drives the right arm during an active swing (overrides the above)
+    if (swing && swing.active) {
+      // swing.t01 runs 0..1 across the whole swing; chop peaks mid-active
+      armR.rotation.x = -2.5 * Math.sin(Math.min(1, swing.t01) * Math.PI);
+      armR.rotation.z = 0.15 * Math.sin(Math.min(1, swing.t01) * Math.PI);
+    } else {
+      armR.rotation.z *= 0.7;
+    }
+  }
+
+  /* ------------------------------------------------------- per tick ----- */
+  bus.on('game:tick', function (t) {
+    if (t && t.__selfTest) return;
+    if (!root) return;
+    var dt = t.dt;
+
+    var run = computeMove();
+    if (input.buttons.wasPressed('jump')) jump();
+
+    // gravity
+    var gh = groundAt(pstate.x, pstate.z);
+    pstate.vy -= GRAVITY * dt;
+    pstate.y += pstate.vy * dt;
+    if (pstate.y <= gh) { pstate.y = gh; pstate.vy = 0; pstate.onGround = true; }
+
+    // stamina regen
+    if (stats.st < stats.maxst) stats.st = Math.min(stats.maxst, stats.st + STAMINA_REGEN * dt);
+
+    // transform
+    root.position.set(pstate.x, pstate.y, pstate.z);
+    rig.rotation.y = pstate.yaw;
+    parts.blob.position.y = gh - pstate.y + 0.03; // blob is child of root
+    parts.blob.position.x = 0; parts.blob.position.z = 0;
+
+    pstate.anim = pickState(run);
+    animate(dt);
+  });
+
+  /* ----------------------------------------------------- spawn/boot ----- */
+  function respawnAt(x, z) {
+    pstate.x = x; pstate.z = z; pstate.vy = 0;
+    pstate.y = groundAt(x, z); pstate.onGround = true;
+    if (root) root.position.set(pstate.x, pstate.y, pstate.z);
+    bus.emit('player:spawned', { position: { x: pstate.x, y: pstate.y, z: pstate.z } });
+  }
+
+  bus.on('game:booted', function (p) {
+    if (p && p.__selfTest) return;
+    buildRig();
+    EF.engine.scene.add(root);
+    equip('sword');                              // default weapon
+    EF.engine.camera.setTarget(root);            // Combat: camera on player root
+    pstate.y = groundAt(pstate.x, pstate.z);
+    root.position.set(pstate.x, pstate.y, pstate.z);
+    respawnAt(pstate.x, pstate.z);
+  });
+
+  /* ---------------------------------------------------- public API ------ */
+  EF.player = {
+    stats: stats,
+    get root() { return root; },
+    get position() { return pstate; },     // {x,y,z,yaw,...} read model
+    getYaw: function () { return pstate.yaw; },
+    isMoving: function () { return pstate.moving; },
+    isAirborne: function () { return !pstate.onGround; },
+    getWeapon: function () { return currentWeaponDef; },
+    getWeaponId: function () { return currentWeaponId; },
+    equip: function (id) { bus.emit('weapon:equip', { id: id }); },
+    trySpendStamina: trySpendStamina,
+    respawnAt: respawnAt
+  };
+})();
+</script>
+<!-- ================= enemies.js             Cycle 2  (Combat) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL — enemies.js  (Combat dept, Cycle 2)
+ * Pooled enemies from data/enemyTypes.js. States: idle/wander/chase/attack/
+ * dead. One AI wrinkle per type (wolves circle, skeletons slow+tanky, bandits
+ * kite then lunge, troll rare high-HP wanderer). Attacks telegraph with a
+ * wind-up pose. Health bars billboard via the parent-inverse quaternion trick.
+ * Spawn zones by biome; respawn away from the player.
+ *
+ * Ownership boundary (Contract v1.1 §5 + Cycle 2 pitfall):
+ *   - enemies.js owns kinematics, AI, models, hp-bar rendering, spawn/respawn,
+ *     and lifecycle events (enemy:spawned / enemy:died).
+ *   - combat.js owns ALL hp mutation. Enemies never write e.hp; combat does.
+ *     During an attack strike the enemy calls EF.combat.hurtPlayer(...) rather
+ *     than touching player hp.
+ *
+ * No per-frame allocation in the AI loop: classic for-loops, module-scope
+ * scratch objects, number math only.
+ *
+ * Load order: after engine.js and data/enemyTypes.js. Depends on THREE (r128),
+ * EF.engine (bus/camera/time), EF.data.enemyTypes, EF.player (position),
+ * EF.combat (hurtPlayer). Reads EF.world.terrainH if present, else flat.
+ * Delivery: raw .js text, ASCII quotes only (Contract v1.1 §2.5).
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  if (!EF.engine) { console.error('[EF.enemies] engine.js must load before enemies.js'); return; }
+  var bus = EF.engine.bus;
+
+  function groundAt(x, z) {
+    if (EF.world && typeof EF.world.terrainH === 'function') return EF.world.terrainH(x, z);
+    if (EF.engine && typeof EF.engine.groundAt === 'function') return EF.engine.groundAt(x, z);
+    return 0;
+  }
+
+  /* module-scope scratch — reused every frame, never reallocated */
+  var _q = new THREE.Quaternion();
+  var _camQ = new THREE.Quaternion();
+
+  var pool = [];          // all enemy handles (fixed size, recycled)
+  var idCounter = 0;
+
+  /* [build-03 integrator patch, playtest bug #1] terrainH is ANALYTIC: it
+   * returns heights for any (x,z), but the visual terrain mesh only spans
+   * EF.worldData.terrain.size (±110). Spawn zones that poke past the mesh
+   * edge put enemies on invisible ground — "floating, off-map". All spawn
+   * candidates and per-frame AI movement are now clamped to the mesh. */
+  var EDGE_MARGIN = 4;
+  var HALF = 100; // refreshed from world data at boot; safe fallback
+  function refreshWorldBounds() {
+    var wd = EF.worldData;
+    if (wd && wd.terrain && wd.terrain.size) HALF = wd.terrain.size * 0.5 - EDGE_MARGIN;
+  }
+
+  /* -------------------------------------------------- hp bar builder ---- */
+  function makeHpBar(width) {
+    var g = new THREE.Group();
+    var bg = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, 0.14),
+      new THREE.MeshBasicMaterial({ color: 0x1a0606, fog: false })
+    );
+    var fg = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, 0.14),
+      new THREE.MeshBasicMaterial({ color: 0xdd3333, fog: false })
+    );
+    fg.position.z = 0.01;
+    g.add(bg); g.add(fg);
+    return { group: g, fg: fg, width: width };
+  }
+
+  /* ------------------------------------------------------ spawn pos ----- */
+  function spawnInZone(zone, awayFromPlayer) {
+    var p = EF.player && EF.player.position;
+    var px = p ? p.x : 0, pz = p ? p.z : 0;
+    for (var k = 0; k < 24; k++) {
+      var ang = Math.random() * Math.PI * 2;
+      var rad = Math.sqrt(Math.random()) * zone.r;
+      var x = zone.cx + Math.cos(ang) * rad;
+      var z = zone.cz + Math.sin(ang) * rad;
+      /* [build-03] reject candidates off the terrain mesh */
+      if (x < -HALF || x > HALF || z < -HALF || z > HALF) continue;
+      var dpx = x - px, dpz = z - pz;
+      if (!awayFromPlayer || (dpx * dpx + dpz * dpz) > 32 * 32) return { x: x, z: z };
+    }
+    /* [build-03] fallback: zone center clamped onto the mesh */
+    return {
+      x: Math.max(-HALF, Math.min(HALF, zone.cx)),
+      z: Math.max(-HALF, Math.min(HALF, zone.cz))
+    };
+  }
+
+  /* biome gate: if world exposes biomeAt, prefer a matching spot; else use the
+   * static zone. Keeps spawn logic forward-compatible with world.js. */
+  function pickSpawn(def, zone, biome, away) {
+    if (EF.world && typeof EF.world.biomeAt === 'function') {
+      for (var k = 0; k < 12; k++) {
+        var s = spawnInZone(zone, away);
+        if (EF.world.biomeAt(s.x, s.z) === biome) return s;
+      }
+    }
+    return spawnInZone(zone, away);
+  }
+
+  /* ---------------------------------------------------- create pool ----- */
+  function createEnemy(typeId, zone, biome) {
+    var def = EF.data.enemyTypes.get(typeId);
+    var built = def.build();
+    var bar = makeHpBar(def.contactRadius * 2.4);
+    bar.group.position.y = def.barY;
+    built.group.add(bar.group);
+
+    var e = {
+      id: typeId + '-' + (++idCounter),
+      typeId: typeId, def: def,
+      root: built.group, parts: built.parts, bar: bar,
+      x: 0, z: 0, yaw: 0,
+      hp: def.maxhp, maxhp: def.maxhp,
+      alive: true, state: 'idle',
+      // timers / ai scratch (all mutated in place)
+      wanderT: 0, tx: 0, tz: 0,
+      atkPhase: 'none', atkT: 0, cooldownT: 0, struck: false,
+      orbitSign: Math.random() < 0.5 ? 1 : -1,
+      lungeT: 0, lungeVX: 0, lungeVZ: 0,
+      deadT: 0, walkPhase: Math.random() * 6,
+      zone: zone, biome: biome,
+      _hitSwing: -1               // last combat swing id that hit this enemy
+    };
+    EF.engine.scene.add(e.root);
+    return e;
+  }
+
+  function respawn(e, initial) {
+    var s = pickSpawn(e.def, e.zone, e.biome, true);
+    e.x = s.x; e.z = s.z;
+    e.hp = e.maxhp; e.alive = true; e.state = 'wander';
+    e.atkPhase = 'none'; e.atkT = 0; e.cooldownT = 0; e.struck = false;
+    e.lungeT = 0; e.deadT = 0;
+    e.root.rotation.set(0, 0, 0);
+    e.root.visible = true;
+    e.bar.group.visible = true;
+    e.bar.fg.scale.x = 1; e.bar.fg.position.x = 0;
+    resetPose(e);
+    e.root.position.set(e.x, groundAt(e.x, e.z), e.z);
+    bus.emit('enemy:spawned', { type: e.typeId, id: e.id, position: { x: e.x, y: groundAt(e.x, e.z), z: e.z } });
+  }
+
+  function resetPose(e) {
+    var p = e.parts;
+    if (p.telegraph) { p.telegraph.rotation.x = 0; }
+    if (p.legL) p.legL.rotation.x = 0;
+    if (p.legR) p.legR.rotation.x = 0;
+    if (p.legs) for (var i = 0; i < p.legs.length; i++) p.legs[i].rotation.x = 0;
+    if (p.armL) p.armL.rotation.x = 0;
+  }
+
+  /* ----------------------------------------------------- animation ------ */
+  function animWalk(e, moveMag, dt) {
+    var p = e.parts, def = e.def;
+    e.walkPhase += dt * def.walkFreq * (0.4 + moveMag);
+    var s = Math.sin(e.walkPhase) * 0.6 * (0.3 + moveMag);
+    if (p.legs) {                       // quadruped: diagonal gait
+      p.legs[0].rotation.x = s;  p.legs[3].rotation.x = s;
+      p.legs[1].rotation.x = -s; p.legs[2].rotation.x = -s;
+    } else if (p.legL) {                // biped
+      p.legL.rotation.x = s; p.legR.rotation.x = -s;
+      if (p.armL) p.armL.rotation.x = -s * 0.6;
+    }
+  }
+
+  /* telegraph: rear the wind-up node back over the windup, snap through on the
+   * strike, ease out on recover. t01 is 0..1 within the current sub-phase. */
+  function animTelegraph(e) {
+    var node = e.parts.telegraph;
+    if (!node) return;
+    if (e.atkPhase === 'windup') {
+      node.rotation.x = -1.6 * e.atkT;             // rear back (up)
+    } else if (e.atkPhase === 'strike') {
+      node.rotation.x = -1.6 + 3.0 * e.atkT;       // chop down through
+    } else if (e.atkPhase === 'recover') {
+      node.rotation.x = 1.4 * (1 - e.atkT);        // settle
+    } else {
+      node.rotation.x *= 0.8;
+    }
+  }
+
+  /* -------------------------------------------------- attack driver ----- */
+  function startAttack(e) {
+    e.state = 'attack';
+    e.atkPhase = 'windup'; e.atkT = 0; e.struck = false;
+  }
+
+  function updateAttack(e, dt, dToPlayer) {
+    var def = e.def;
+    if (e.atkPhase === 'windup') {
+      e.atkT += dt / def.windup;
+      if (e.atkT >= 1) { e.atkPhase = 'strike'; e.atkT = 0; }
+    } else if (e.atkPhase === 'strike') {
+      e.atkT += dt / def.strike;
+      if (!e.struck && e.atkT >= 0.4) {
+        e.struck = true;
+        // landing check: only connects if player is still in range
+        if (dToPlayer <= def.attackRange + 0.4 && EF.combat && EF.combat.hurtPlayer) {
+          EF.combat.hurtPlayer(def.damage, e.typeId);
+        }
+      }
+      if (e.atkT >= 1) { e.atkPhase = 'recover'; e.atkT = 0; }
+    } else if (e.atkPhase === 'recover') {
+      e.atkT += dt / def.recover;
+      if (e.atkT >= 1) {
+        e.atkPhase = 'none';
+        e.cooldownT = def.cooldown;
+        e.state = 'chase';
+      }
+    }
+    animTelegraph(e);
+  }
+
+  /* --------------------------------------------------- AI wrinkles ------ *
+   * All wrinkles operate on numbers (e.x/e.z) — no vector allocation. Return
+   * the intended move magnitude for the walk animation. */
+  function aiChaseWolf(e, dt, px, pz, d) {
+    var def = e.def;
+    if (d <= def.lungeRange && e.cooldownT <= 0) { startAttack(e); return 0; }
+    // orbit at radius, then close: blend a tangential component with radial
+    var nx = (px - e.x) / (d || 1), nz = (pz - e.z) / (d || 1);
+    var tx = -nz * e.orbitSign, tz = nx * e.orbitSign;         // tangent
+    var pull = d > def.orbitRadius ? 1 : 0.15;                 // close in if far
+    var mx = nx * pull + tx * (1 - pull) * 1.4;
+    var mz = nz * pull + tz * (1 - pull) * 1.4;
+    var mlen = Math.sqrt(mx * mx + mz * mz) || 1;
+    e.x += (mx / mlen) * def.speed * dt;
+    e.z += (mz / mlen) * def.speed * dt;
+    e.yaw = Math.atan2(px - e.x, pz - e.z);
+    return 1;
+  }
+
+  function aiChaseTank(e, dt, px, pz, d) {          // skeleton: plodding line
+    var def = e.def;
+    if (d <= def.attackRange && e.cooldownT <= 0) { startAttack(e); return 0; }
+    var nx = (px - e.x) / (d || 1), nz = (pz - e.z) / (d || 1);
+    e.x += nx * def.speed * dt;
+    e.z += nz * def.speed * dt;
+    e.yaw = Math.atan2(nx, nz);
+    return 0.7;
+  }
+
+  function aiChaseKite(e, dt, px, pz, d) {           // bandit: keep distance, lunge
+    var def = e.def;
+    if (e.lungeT > 0) {                              // mid-lunge dash
+      e.lungeT -= dt;
+      e.x += e.lungeVX * dt; e.z += e.lungeVZ * dt;
+      e.yaw = Math.atan2(px - e.x, pz - e.z);
+      if (d <= def.attackRange && e.cooldownT <= 0) { e.lungeT = 0; startAttack(e); }
+      return 1;
+    }
+    var nx = (px - e.x) / (d || 1), nz = (pz - e.z) / (d || 1);
+    if (d < def.keepDistance - 0.5) {               // too close -> retreat
+      e.x -= nx * def.retreatSpeed * dt;
+      e.z -= nz * def.retreatSpeed * dt;
+      e.yaw = Math.atan2(nx, nz);                    // still face player
+      return 1;
+    } else if (d > def.lungeRange) {                 // too far -> approach
+      e.x += nx * def.speed * dt;
+      e.z += nz * def.speed * dt;
+      e.yaw = Math.atan2(nx, nz);
+      return 0.8;
+    } else if (e.cooldownT <= 0) {                   // in the pocket -> lunge
+      e.lungeT = def.lungeTime;
+      e.lungeVX = nx * def.lungeSpeed; e.lungeVZ = nz * def.lungeSpeed;
+      return 1;
+    }
+    e.yaw = Math.atan2(nx, nz);
+    return 0;
+  }
+
+  function aiChaseWander(e, dt, px, pz, d) {          // troll: heavy, slow close
+    var def = e.def;
+    if (d <= def.attackRange && e.cooldownT <= 0) { startAttack(e); return 0; }
+    var nx = (px - e.x) / (d || 1), nz = (pz - e.z) / (d || 1);
+    e.x += nx * def.speed * dt;
+    e.z += nz * def.speed * dt;
+    e.yaw = Math.atan2(nx, nz);
+    return 0.6;
+  }
+
+  function doWander(e, dt) {
+    var def = e.def;
+    e.wanderT -= dt;
+    if (e.wanderT <= 0) {
+      e.wanderT = 2 + Math.random() * 4;
+      e.tx = e.x + (Math.random() * 2 - 1) * 14;
+      e.tz = e.z + (Math.random() * 2 - 1) * 14;
+    }
+    var wx = e.tx - e.x, wz = e.tz - e.z, wd = Math.sqrt(wx * wx + wz * wz);
+    if (wd > 0.5) {
+      var sp = def.speed * 0.4;
+      e.x += (wx / wd) * sp * dt;
+      e.z += (wz / wd) * sp * dt;
+      e.yaw = Math.atan2(wx, wz);
+      return 0.5;
+    }
+    return 0;
+  }
+
+  /* ------------------------------------------------------- per tick ----- */
+  bus.on('game:tick', function (t) {
+    if (t && t.__selfTest) return;
+    if (pool.length === 0) return;
+    var dt = t.dt;
+    var p = EF.player && EF.player.position;
+    var px = p ? p.x : 0, pz = p ? p.z : 0;
+    _camQ.copy(EF.engine.camera.object.quaternion);
+    var playerDead = EF.combat && EF.combat.isPlayerDead && EF.combat.isPlayerDead();
+
+    for (var i = 0; i < pool.length; i++) {
+      var e = pool[i];
+
+      if (!e.alive) {                          // dead: topple, sink, respawn
+        e.deadT += dt;
+        e.bar.group.visible = false;
+        e.root.rotation.z = Math.min(Math.PI / 2, e.deadT * 3.5);
+        var sink = Math.min(1.2, Math.max(0, e.deadT - 1.6) * 0.7);
+        e.root.position.y = groundAt(e.x, e.z) - sink;
+        if (e.deadT > 7) { respawn(e, false); }
+        continue;
+      }
+
+      if (e.cooldownT > 0) e.cooldownT -= dt;
+
+      var dx = px - e.x, dz = pz - e.z, d = Math.sqrt(dx * dx + dz * dz);
+      var moveMag = 0;
+
+      if (e.state === 'attack') {
+        updateAttack(e, dt, d);
+        moveMag = 0;
+      } else if (!playerDead && d < e.def.aggro) {
+        e.state = 'chase';
+        switch (e.def.wrinkle) {
+          case 'circle': moveMag = aiChaseWolf(e, dt, px, pz, d); break;
+          case 'tank':   moveMag = aiChaseTank(e, dt, px, pz, d); break;
+          case 'kite':   moveMag = aiChaseKite(e, dt, px, pz, d); break;
+          default:       moveMag = aiChaseWander(e, dt, px, pz, d); break;
+        }
+      } else {
+        e.state = 'wander';
+        moveMag = doWander(e, dt);
+      }
+
+      // [build-03] keep AI movement (chase/lunge/knockback/wander) on the mesh
+      if (e.x < -HALF) e.x = -HALF; else if (e.x > HALF) e.x = HALF;
+      if (e.z < -HALF) e.z = -HALF; else if (e.z > HALF) e.z = HALF;
+
+      // commit transform
+      e.root.position.set(e.x, groundAt(e.x, e.z), e.z);
+      e.root.rotation.y = e.yaw;
+
+      // leg/telegraph animation
+      if (e.state !== 'attack') animWalk(e, moveMag, dt);
+
+      // hp bar fill from current hp (combat is the writer; we only render)
+      var r = e.maxhp > 0 ? Math.max(0, e.hp / e.maxhp) : 0;
+      e.bar.fg.scale.x = Math.max(0.001, r);
+      e.bar.fg.position.x = -(1 - r) * (e.bar.width * 0.5);
+      // billboard: parent group is rotated, so undo it then face camera
+      e.bar.group.quaternion.copy(e.root.quaternion).invert().multiply(_camQ);
+    }
+  });
+
+  /* --------------------------------------------------- boot the pool ---- */
+  bus.on('game:booted', function (bp) {
+    if (bp && bp.__selfTest) return;
+    refreshWorldBounds(); // [build-03] before any spawn math
+    var roster = EF.data.enemyTypes.roster;
+    for (var r = 0; r < roster.length; r++) {
+      var entry = roster[r];
+      for (var n = 0; n < entry.count; n++) {
+        var e = createEnemy(entry.type, entry.zone, entry.biome);
+        pool.push(e);
+        respawn(e, true);
+      }
+    }
+    console.log('[EF.enemies] pool ready: ' + pool.length + ' enemies across ' + roster.length + ' zones');
+  });
+
+  /* ----------------------------------------------------- public API ----- *
+   * combat.js is the only writer of e.hp. It calls kill(e) when hp hits 0. */
+  EF.enemies = {
+    pool: pool,
+    each: function (fn) { for (var i = 0; i < pool.length; i++) fn(pool[i], i); },
+    applyKnockback: function (e, nx, nz, impulse) {
+      // nx,nz should be a unit vector from player -> enemy
+      e.x += nx * impulse * 0.18;
+      e.z += nz * impulse * 0.18;
+    },
+    kill: function (e) {
+      if (!e.alive) return;
+      e.alive = false; e.state = 'dead'; e.deadT = 0;
+      e.atkPhase = 'none';
+      e.bar.group.visible = false;
+      bus.emit('enemy:died', { type: e.typeId, id: e.id });
+    }
+  };
+})();
+</script>
+<!-- ================= combat.js              Cycle 2  (Combat) -- LAST per header ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL — combat.js  (Combat dept, Cycle 2)
+ * THE math authority (Contract v1.1 §5): ALL damage, xp, gold, and level math
+ * live here, and combat.js is the ONLY writer of hp — both the player's and
+ * every enemy's. Owns swing timing (wind-up / active hit window / recover),
+ * arc test, knockback, level-scaled crit, player:levelup with stat growth, and
+ * damage-number emission for UI popups.
+ *
+ * Reads swing input, player pose/weapon, and enemy pool; writes hp and stats;
+ * tells enemies.js to kill(), tells player.js to respawnAt(). Emits:
+ *   enemy:died (via enemies.kill), player:damaged, player:died, player:levelup,
+ *   loot:collected, ui:toast, camera:shake, audio:play, and combat:damage
+ *   (floating damage numbers — pre-approval pending; warns once until Engine
+ *   Core adds it to CANONICAL_EVENTS).
+ *
+ * Load order: LAST (after player.js and enemies.js). Depends on THREE (r128),
+ * EF.engine (bus/input/audio/time/camera), EF.player, EF.enemies,
+ * EF.data.weapons.
+ * A-1 note: attack is tap-triggered via wasPressed('attack'); no hold/charge.
+ * Delivery: raw .js text, ASCII quotes only (Contract v1.1 §2.5).
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  if (!EF.engine) { console.error('[EF.combat] engine.js must load before combat.js'); return; }
+  var bus = EF.engine.bus, input = EF.engine.input;
+
+  /* register combat sfx (engine ships jump/hit/hurt/pickup/ui.click already) */
+  (function registerSfx() {
+    var A = EF.engine.audio;
+    A.register('swing.light', { type: 'sawtooth', freq: 520, freqEnd: 300, duration: 0.10, gain: 0.10 });
+    A.register('swing.mid',   { type: 'sawtooth', freq: 300, freqEnd: 150, duration: 0.14, gain: 0.14 });
+    A.register('swing.heavy', { type: 'sawtooth', freq: 180, freqEnd: 80,  duration: 0.22, gain: 0.18 });
+    A.register('enemy.hit',   { type: 'square',   freq: 160, freqEnd: 70,  duration: 0.12, gain: 0.16 });
+    A.register('crit',        { type: 'square',   freq: 900, freqEnd: 300, duration: 0.16, gain: 0.20 });
+    A.register('levelup',     { type: 'triangle', freq: 440, freqEnd: 880, duration: 0.30, gain: 0.20 });
+    A.register('loot.gold',   { type: 'square',   freq: 880, freqEnd: 1320,duration: 0.10, gain: 0.14 });
+  })();
+
+  function sfx(name) { bus.emit('audio:play', { sfx: name }); }
+
+  /* ==================== LEVEL / STAT MATH ==================== */
+  var CRIT_PER_LEVEL = 0.02, CRIT_CAP = 0.5, CRIT_MULT = 2.0;
+
+  function critChance(weaponDef) {
+    var s = EF.player.stats;
+    var base = CRIT_PER_LEVEL * (s.lvl - 1) + (weaponDef ? weaponDef.critBonus : 0);
+    return Math.max(0, Math.min(CRIT_CAP, base));
+  }
+
+  function rollDamage(weaponDef, crit) {
+    var s = EF.player.stats;
+    var lo = weaponDef.damage[0], hi = weaponDef.damage[1];
+    var base = lo + Math.random() * (hi - lo);
+    // player attack power (s.dmg) scales the weapon's base band
+    var scaled = base * (s.dmg / 20);
+    if (crit) scaled *= CRIT_MULT;
+    return Math.round(scaled);
+  }
+
+  function gainXp(n) {
+    var s = EF.player.stats;
+    s.xp += n;
+    while (s.xp >= s.xpNext) {
+      s.xp -= s.xpNext;
+      s.lvl++;
+      s.xpNext = Math.floor(s.xpNext * 1.5);
+      // stat growth
+      s.maxhp += 20; s.hp = s.maxhp;          // heal to full on level
+      s.maxst += 5;  s.st = s.maxst;
+      s.dmg += 6;
+      sfx('levelup');
+      bus.emit('player:levelup', { level: s.lvl });
+      bus.emit('ui:toast', { text: 'Level ' + s.lvl + '!' });
+    }
+  }
+
+  function awardGold(min, max) {
+    var s = EF.player.stats;
+    var g = Math.floor(min + Math.random() * (max - min + 1));
+    s.gold += g;
+    sfx('loot.gold');
+    bus.emit('loot:collected', { item: 'gold', count: g });
+    return g;
+  }
+
+  /* ==================== ENEMY HP (combat is sole writer) ==================== */
+  function damageEnemy(e, amount, crit, nx, nz, weaponDef) {
+    e.hp -= amount;                             // <-- the ONLY enemy hp write
+    bus.emit('combat:damage', {
+      amount: amount, crit: !!crit, target: 'enemy',
+      position: { x: e.x, y: groundAt(e.x, e.z) + (e.def.barY + 0.3), z: e.z }
+    });
+    EF.enemies.applyKnockback(e, nx, nz, weaponDef.knockback * (crit ? 1.5 : 1));
+    if (e.hp <= 0 && e.alive) {
+      EF.enemies.kill(e);                       // enemies.kill emits enemy:died
+      gainXp(e.def.xp);
+      awardGold(e.def.gold[0], e.def.gold[1]);
+      if (Math.random() < e.def.potionChance) {
+        bus.emit('loot:collected', { item: 'potion', count: 1 });
+        bus.emit('ui:toast', { text: '+1 Potion' });
+      }
+    }
+  }
+
+  function groundAt(x, z) {
+    if (EF.world && typeof EF.world.terrainH === 'function') return EF.world.terrainH(x, z);
+    if (EF.engine && typeof EF.engine.groundAt === 'function') return EF.engine.groundAt(x, z);
+    return 0;
+  }
+
+  /* ==================== SWING STATE MACHINE ==================== */
+  var swing = { active: false, phase: 'idle', t: 0, t01: 0, weapon: null, id: 0, hitDone: false };
+
+  function tryStartSwing() {
+    if (swing.active || isPlayerDead) return;
+    var w = EF.player.getWeapon();
+    if (!w) return;
+    if (!EF.player.trySpendStamina(w.stamina)) return;   // player owns stamina
+    swing.active = true;
+    swing.phase = 'windup';
+    swing.t = 0; swing.t01 = 0;
+    swing.weapon = w;
+    swing.id++;
+    swing.hitDone = false;
+    sfx(w.sfx);
+  }
+
+  function updateSwing(dt) {
+    if (!swing.active) return;
+    var w = swing.weapon;
+    var total = w.windup + w.active + w.recover;
+    swing.t += dt;
+    swing.t01 = Math.min(1, swing.t / total);
+
+    if (swing.t < w.windup) {
+      swing.phase = 'windup';
+    } else if (swing.t < w.windup + w.active) {
+      swing.phase = 'active';
+      if (!swing.hitDone) { swing.hitDone = true; resolveHit(w); }  // hit window
+    } else if (swing.t < total) {
+      swing.phase = 'recover';
+    } else {
+      swing.active = false; swing.phase = 'idle'; swing.weapon = null;
+    }
+  }
+
+  /* arc + reach test against the enemy pool. No allocation. */
+  function resolveHit(w) {
+    var pp = EF.player.position;
+    var px = pp.x, pz = pp.z, yaw = pp.yaw;
+    var fx = Math.sin(yaw), fz = Math.cos(yaw);       // player forward
+    var cosHalf = Math.cos(w.arc * 0.5);
+    var crit = Math.random() < critChance(w);
+    var hitAny = false;
+    var pool = EF.enemies.pool;
+
+    for (var i = 0; i < pool.length; i++) {
+      var e = pool[i];
+      if (!e.alive || e._hitSwing === swing.id) continue;
+      var dx = e.x - px, dz = e.z - pz;
+      var d = Math.sqrt(dx * dx + dz * dz);
+      if (d > w.reach + e.def.contactRadius) continue;
+      var nx = dx / (d || 1), nz = dz / (d || 1);
+      var dot = nx * fx + nz * fz;
+      if (dot < cosHalf) continue;                    // outside the arc
+      e._hitSwing = swing.id;
+      var dmg = rollDamage(w, crit);
+      damageEnemy(e, dmg, crit, nx, nz, w);
+      hitAny = true;
+    }
+
+    if (hitAny) {
+      sfx(crit ? 'crit' : 'enemy.hit');
+      // heavier weapons and crits sell weight with a small camera shake
+      var shake = (crit ? 0.28 : 0.12) + w.knockback * 0.02;
+      bus.emit('camera:shake', { intensity: Math.min(0.5, shake), duration: 0.18 });
+    }
+  }
+
+  /* ==================== PLAYER HP (combat is sole writer) ==================== */
+  var isPlayerDead = false;
+  var hurtCd = 0;
+  var IFRAMES = 0.6;
+
+  function hurtPlayer(amount, sourceType) {
+    if (isPlayerDead || hurtCd > 0) return;
+    var s = EF.player.stats;
+    hurtCd = IFRAMES;
+    s.hp -= amount;                              // <-- the ONLY player hp write
+    bus.emit('player:damaged', { amount: amount, source: sourceType || 'unknown' });
+    bus.emit('combat:damage', {
+      amount: amount, crit: false, target: 'player',
+      position: { x: EF.player.position.x, y: EF.player.position.y + 2.2, z: EF.player.position.z }
+    });
+    sfx('hurt');
+    if (s.hp <= 0) {
+      s.hp = 0;
+      isPlayerDead = true;
+      bus.emit('player:died', { cause: sourceType || 'unknown' });
+      bus.emit('ui:toast', { text: 'You died' });
+    }
+  }
+
+  function respawn(x, z) {
+    var s = EF.player.stats;
+    isPlayerDead = false; hurtCd = IFRAMES + 0.6;
+    s.hp = s.maxhp; s.st = s.maxst;
+    EF.player.respawnAt(x != null ? x : 0, z != null ? z : 8);
+  }
+
+  function heal(amount) {
+    if (isPlayerDead) return;
+    var s = EF.player.stats;
+    s.hp = Math.min(s.maxhp, s.hp + amount);
+    bus.emit('combat:damage', {
+      amount: amount, crit: false, target: 'heal',
+      position: { x: EF.player.position.x, y: EF.player.position.y + 2.2, z: EF.player.position.z }
+    });
+  }
+
+  /* ==================== TICK ==================== */
+  bus.on('game:tick', function (t) {
+    if (t && t.__selfTest) return;
+    var dt = t.dt;
+    if (hurtCd > 0) hurtCd -= dt;
+    if (input.buttons.wasPressed('attack')) tryStartSwing();
+    updateSwing(dt);
+  });
+
+  /* ==================== PUBLIC API ==================== */
+  EF.combat = {
+    // read model for player.js arm animation (returns stable object, no alloc)
+    getSwing: function () { return swing; },
+    isPlayerDead: function () { return isPlayerDead; },
+    // enemies.js calls this on a landed strike instead of touching player hp
+    hurtPlayer: hurtPlayer,
+    heal: heal,
+    respawn: respawn,
+    // exposed for UI/inventory hooks
+    gainXp: gainXp,
+    critChance: critChance
+  };
+})();
+</script>
+<!-- ================= npcs.js             STUB  (Integrator) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL -- npcs.js  (STUB, build-03)
+ * NPC department has not delivered for this cycle. Empty module reserves the
+ * EF.npcs namespace so downstream code can feature-detect it safely.
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  EF.npcs = {};
+  console.log('[EF.npcs] stub loaded (empty module, build-03)');
+})();
+</script>
+<!-- ================= quests.js           STUB  (Integrator) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL -- quests.js  (STUB, build-03)
+ * Quest department has not delivered for this cycle. Empty module reserves
+ * the EF.quests namespace so downstream code can feature-detect it safely.
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  EF.quests = {};
+  console.log('[EF.quests] stub loaded (empty module, build-03)');
+})();
+</script>
+<!-- ================= ui.js               STUB  (Integrator) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL -- ui.js  (STUB, build-03)
+ * UI/UX department has not delivered for this cycle. Empty module reserves
+ * the EF.ui namespace. Reminder for the real delivery: <style> tags are
+ * stripped by the sandbox (Contract v1.1 s2.2) -- inline styles / cssText
+ * only, exactly as this build does everywhere.
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  EF.ui = {};
+  console.log('[EF.ui] stub loaded (empty module, build-03)');
+})();
+</script>
+<!-- ================= diag-controls.js    TEMPORARY (Integrator) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL -- diag-controls.js  (TEMPORARY, Integrator, build-03)
+ * Playtest gap #3: UI dept has not delivered, so combat/death/respawn could
+ * not be tested on the phone. Three touch buttons wired through the REAL
+ * input path -- EF.engine.input.bindButton -- so Attack and Jump go through
+ * the same wasPressed() edges combat.js and player.js already poll, and
+ * emit canonical input:button events. Respawn polls its own button edge on
+ * game:tick and calls EF.combat.respawn() (which drives player.respawnAt ->
+ * player:spawned). DELETE THIS MODULE when UI delivers in Cycle 3.
+ * s2.2: no <style> tags -- cssText only. No private rAF. No per-frame alloc
+ * (tick handler only reads button edges).
+ * A-1 note: pointerleave releases the button -- fine, these are tap actions.
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  if (!EF.engine) { console.error('[EF.diagControls] engine.js must load first'); return; }
+  var input = EF.engine.input, bus = EF.bus;
+
+  function circleBtn(label, bottom, size) {
+    var el = document.createElement('div');
+    el.style.cssText =
+      'position:fixed;right:18px;bottom:' + bottom + 'px;width:' + size + 'px;height:' + size + 'px;' +
+      'border-radius:50%;background:rgba(20,30,26,0.55);border:2px solid rgba(216,240,216,0.5);' +
+      'color:#d8f0d8;font:bold 12px/' + size + 'px monospace;text-align:center;' +
+      'z-index:8;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;';
+    el.textContent = label;
+    document.body.appendChild(el);
+    return el;
+  }
+
+  bus.on('game:booted', function (p) {
+    if (p && p.__selfTest) return;
+
+    var atkEl = circleBtn('ATK', 26, 78);
+    var jmpEl = circleBtn('JMP', 122, 64);
+    var rspEl = document.createElement('div');
+    rspEl.style.cssText =
+      'position:fixed;left:50%;bottom:16px;width:96px;margin-left:-48px;padding:8px 0;' +
+      'border-radius:16px;background:rgba(40,14,12,0.6);border:2px solid rgba(255,160,140,0.5);' +
+      'color:#ffd7d0;font:bold 11px monospace;text-align:center;' +
+      'z-index:8;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;';
+    rspEl.textContent = 'RESPAWN';
+    document.body.appendChild(rspEl);
+
+    /* the real input path: same names combat.js / player.js already poll */
+    input.bindButton('attack', atkEl);
+    input.bindButton('jump', jmpEl);
+    input.bindButton('respawn', rspEl);
+
+    /* pressed-state feedback off the canonical input:button edge events */
+    var els = { attack: atkEl, jump: jmpEl, respawn: rspEl };
+    bus.on('input:button', function (b) {
+      if (!b || b.__selfTest) return;
+      var el = els[b.name];
+      if (el) el.style.background = b.pressed ? 'rgba(120,200,140,0.45)'
+                                              : (b.name === 'respawn' ? 'rgba(40,14,12,0.6)' : 'rgba(20,30,26,0.55)');
+    });
+
+    bus.on('game:tick', function (t) {
+      if (t && t.__selfTest) return;
+      if (input.buttons.wasPressed('respawn') && EF.combat) EF.combat.respawn();
+    });
+
+    console.log('[EF.diagControls] temporary controls bound: attack / jump / respawn');
+  });
+})();
+</script>
+<!-- ================= diag.js             QA OVERLAY (diag build only) ================= -->
+<script>
+/* ============================================================================
+ * EMBERFELL -- diag.js  (Integrator/QA overlay, build-03-diag ONLY)
+ * Contract v1.1 "Build discipline": error overlay + probes + FPS badge.
+ * The phone is the QA rig and cannot otherwise report errors.
+ *
+ * - No <style> tags (s2.2): every style is el.style.cssText.
+ * - No private rAF loop (s5): rides game:tick, throttled to 4 Hz.
+ * - Draw calls are read from renderer.info.render.calls (previous frame's
+ *   count, since render happens after the tick emit). Budget: <= 60.
+ * - Auto-runs EF.engine.selfTest() 2 s after boot; result shown in badge.
+ * - NOTE: the overlay allocates strings at 4 Hz while updating its DOM text.
+ *   That is a diag-build-only cost and is why this file never ships in the
+ *   clean build (CR-2 applies to shipping modules, not the QA rig).
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var EF = (window.EF = window.EF || {});
+  var DRAW_BUDGET = 60;
+  var counts = { error: 0, warn: 0 };
+  var maxCalls = 0, selfTestResult = '--';
+
+  var badge = null, probeLine = null, logPanel = null;
+
+  function makeDom() {
+    badge = document.createElement('div');
+    badge.style.cssText =
+      'position:fixed;top:6px;left:6px;z-index:9999;pointer-events:none;' +
+      'font:11px/1.45 monospace;color:#d8f0d8;background:rgba(10,18,14,0.72);' +
+      'padding:5px 8px;border-radius:6px;border:1px solid rgba(120,200,140,0.35);' +
+      'white-space:pre;max-width:70vw;';
+    badge.textContent = '[EF diag] waiting for boot...';
+    probeLine = document.createElement('div');
+    probeLine.style.cssText =
+      'position:fixed;top:6px;right:6px;z-index:9999;pointer-events:none;' +
+      'font:10px/1.4 monospace;color:#cfd8e6;background:rgba(10,14,20,0.72);' +
+      'padding:4px 7px;border-radius:6px;border:1px solid rgba(130,160,220,0.3);' +
+      'white-space:pre;text-align:right;';
+    logPanel = document.createElement('div');
+    logPanel.style.cssText =
+      'position:fixed;left:6px;right:6px;bottom:6px;z-index:9999;display:none;' +
+      'pointer-events:none;font:10px/1.4 monospace;color:#ffd7d0;' +
+      'background:rgba(30,8,6,0.82);padding:5px 8px;border-radius:6px;' +
+      'border:1px solid rgba(255,110,90,0.5);max-height:34vh;overflow:hidden;' +
+      'white-space:pre-wrap;word-break:break-all;';
+    document.body.appendChild(badge);
+    document.body.appendChild(probeLine);
+    document.body.appendChild(logPanel);
+  }
+
+  var lines = [];
+  function pushLog(kind, msg) {
+    counts[kind]++;
+    if (!logPanel) return;
+    lines.push('[' + kind + '] ' + msg);
+    if (lines.length > 10) lines.shift();
+    logPanel.textContent = lines.join('\n');
+    logPanel.style.display = 'block';
+  }
+
+  function fmtArgs(args) {
+    var out = [];
+    for (var i = 0; i < args.length; i++) {
+      var a = args[i];
+      if (a && a.stack) out.push(String(a.message || a));
+      else { try { out.push(typeof a === 'string' ? a : JSON.stringify(a)); }
+             catch (e) { out.push(String(a)); } }
+    }
+    return out.join(' ');
+  }
+
+  /* mirror console.error / console.warn into the overlay */
+  var origErr = console.error, origWarn = console.warn;
+  console.error = function () { pushLog('error', fmtArgs(arguments)); origErr.apply(console, arguments); };
+  console.warn = function () { pushLog('warn', fmtArgs(arguments)); origWarn.apply(console, arguments); };
+  window.addEventListener('error', function (e) {
+    pushLog('error', (e.message || 'script error') + ' @' + (e.filename || '?') + ':' + (e.lineno || '?'));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    pushLog('error', 'unhandled rejection: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+
+  function probeText() {
+    var ok = function (b) { return b ? 'OK' : 'MISSING'; };
+    return 'EF.engine ' + ok(!!EF.engine) +
+      ' | EF.world ' + ok(!!EF.world && EF.world.ready) +
+      ' | EF.player ' + ok(!!EF.player) +
+      '\nEF.combat ' + ok(!!EF.combat) +
+      ' | EF.enemies ' + ok(!!EF.enemies) + (EF.enemies ? ' (' + EF.enemies.pool.length + ')' : '') +
+      '\nEF.npcs ' + ok(!!EF.npcs) + ' | EF.quests ' + ok(!!EF.quests) + ' | EF.ui ' + ok(!!EF.ui) +
+      '\nselfTest: ' + selfTestResult;
+  }
+
+  var acc = 0;
+  function onTick(t) {
+    if (t && t.__selfTest) return;
+    acc += t.dt;
+    if (acc < 0.25) return;
+    acc = 0;
+    var time = EF.engine.time;
+    var info = EF.engine.renderer ? EF.engine.renderer.info.render : null;
+    var calls = info ? info.calls : 0;
+    if (calls > maxCalls) maxCalls = calls;
+    var budget = maxCalls <= DRAW_BUDGET ? 'PASS' : 'OVER BUDGET';
+    badge.textContent =
+      'EMBERFELL build-03-diag\n' +
+      'fps ' + time.fps + '  frame ' + time.frame + '\n' +
+      'draw calls ' + calls + '  max ' + maxCalls + '/' + DRAW_BUDGET + ' ' + budget + '\n' +
+      (info ? 'tris ' + info.triangles + '\n' : '') +
+      (EF.player ? 'hp ' + Math.round(EF.player.stats.hp) + '/' + EF.player.stats.maxhp +
+        '  st ' + Math.round(EF.player.stats.st) + '  lvl ' + EF.player.stats.lvl + '\n' : '') +
+      'phase ' + (EF.world && EF.world.getTimePhase ? EF.world.getTimePhase() : '--') +
+      '  err ' + counts.error + '  warn ' + counts.warn;
+    probeLine.textContent = probeText();
+  }
+
+  EF.bus.on('game:booted', function (p) {
+    if (p && p.__selfTest) return;
+    if (!badge) makeDom();
+    EF.bus.on('game:tick', onTick);
+    setTimeout(function () {
+      try {
+        var r = EF.engine.selfTest();
+        selfTestResult = (r.pass ? 'PASS' : 'FAIL') + ' (' + r.results.length + ' events)';
+      } catch (e) { selfTestResult = 'THREW: ' + e.message; }
+    }, 2000);
+  });
+
+  /* if boot already happened (script order safety) */
+  if (EF.engine && EF.engine.booted) {
+    makeDom();
+    EF.bus.on('game:tick', onTick);
+  }
+})();
+</script>
+</body>
+</html>

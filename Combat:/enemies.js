@@ -193,6 +193,18 @@
   _mHidden.makeScale(0, 0, 0);
 
   /* ===================== spawn placement ===================== */
+  /* [build-03 integrator patch, re-applied to the CR-5 rewrite for build-04;
+   * Contract s1 addendum rev A] terrainH is ANALYTIC -- it answers for any
+   * (x,z) -- but the terrain mesh only spans EF.worldData.terrain.size.
+   * Spawns and per-frame AI movement are clamped to the mesh. The literal
+   * fallback applies ONLY to module-standalone harnesses without World. */
+  var EDGE_MARGIN = 4;
+  var HALF = 100; // refreshed from world data at boot; harness-only fallback
+  function refreshWorldBounds() {
+    var wd = EF.worldData;
+    if (wd && wd.terrain && wd.terrain.size) HALF = wd.terrain.size * 0.5 - EDGE_MARGIN;
+  }
+
   function spawnInZone(zone, away) {
     var p = EF.player && EF.player.position;
     var px = p ? p.x : 0, pz = p ? p.z : 0;
@@ -200,10 +212,14 @@
       var ang = Math.random() * Math.PI * 2;
       var rad = Math.sqrt(Math.random()) * zone.r;
       var x = zone.cx + Math.cos(ang) * rad, z = zone.cz + Math.sin(ang) * rad;
+      if (x < -HALF || x > HALF || z < -HALF || z > HALF) continue; // off-mesh
       var dx = x - px, dz = z - pz;
       if (!away || (dx * dx + dz * dz) > 32 * 32) return { x: x, z: z };
     }
-    return { x: zone.cx, z: zone.cz };
+    return {
+      x: Math.max(-HALF, Math.min(HALF, zone.cx)),
+      z: Math.max(-HALF, Math.min(HALF, zone.cz))
+    };
   }
   function pickSpawn(zone, biome, away) {
     if (EF.world && typeof EF.world.biomeAt === 'function') {
@@ -318,6 +334,9 @@
     var px = p ? p.x : 0, pz = p ? p.z : 0;
     _camQ.copy(EF.engine.camera.object.quaternion);
     var playerDead = EF.combat && EF.combat.isPlayerDead && EF.combat.isPlayerDead();
+    /* [build-09] enemies do not target the player while inside the village
+     * wall (buildings.js sets EF.village.playerSafe). They fall back to wander. */
+    var playerSafe = EF.village && EF.village.playerSafe;
 
     /* --- 1. AI + logical state, then bake each enemy's base world matrix --- */
     for (i = 0; i < pool.length; i++) {
@@ -332,7 +351,7 @@
         if (e.cooldownT > 0) e.cooldownT -= dt;
         var dx = px - e.x, dz = pz - e.z, d = Math.sqrt(dx * dx + dz * dz), moveMag = 0;
         if (e.state === 'attack') { updateAttack(e, dt, d); moveMag = 0; }
-        else if (!playerDead && d < e.def.aggro) {
+        else if (!playerDead && !playerSafe && d < e.def.aggro) {
           e.state = 'chase';
           switch (e.def.wrinkle) {
             case 'circle': moveMag = aiChaseWolf(e, dt, px, pz, d); break;
@@ -343,6 +362,10 @@
         } else { e.state = 'wander'; moveMag = doWander(e, dt); }
         if (e.state !== 'attack') animWalk(e, moveMag, dt);
       }
+
+      // [build-04] keep AI movement (chase/lunge/knockback/wander) on the mesh
+      if (e.x < -HALF) e.x = -HALF; else if (e.x > HALF) e.x = HALF;
+      if (e.z < -HALF) e.z = -HALF; else if (e.z > HALF) e.z = HALF;
 
       e.groundY = groundAt(e.x, e.z);
       _pos.set(e.x, e.groundY - e.sinkY, e.z);
@@ -388,6 +411,7 @@
   bus.on('game:booted', function (bp) {
     if (bp && bp.__selfTest) return;
     var scene = EF.engine.scene;
+    refreshWorldBounds(); // [build-04] before any spawn math
     var roster = EF.data.enemyTypes.roster;
     var barIdx = 0, totalCount = 0, r;
     for (r = 0; r < roster.length; r++) totalCount += roster[r].count;

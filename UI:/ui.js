@@ -300,7 +300,7 @@
     return { wrap:wrap, name:name, text:text, btns:btns };
   })();
   function openDialogue(p){
-    dlg.name.textContent = p.name||''; dlg.text.textContent = p.text||'';
+    dlg.name.textContent = p.name||p.speaker||''; /* [build-05 patch re-applied] */ dlg.text.textContent = p.text||'';
     dlg.btns.innerHTML='';
     (p.choices||[{label:'Close',id:'close'}]).forEach(function(c){
       var b = el('div','min-height:52px;padding:0 18px;display:flex;align-items:center;justify-content:center;'
@@ -382,8 +382,8 @@
   /* =======================================================================
    * 7. TITLE / DEATH / RESPAWN  (overlays own the mode while shown)
    * ===================================================================== */
-  function overlay(bg){ var o = el('div','position:fixed;inset:0;z-index:20;display:none;flex-direction:column;'
-    + 'align-items:center;justify-content:center;text-align:center;pointer-events:auto;font-family:'+T.serif+';background:'+bg+';'); root.appendChild(o); return o; }
+  function overlay(bg){ var o = el('div','position:fixed;inset:0;z-index:30;display:none;flex-direction:column;'
+    + 'align-items:center;justify-content:center;text-align:center;pointer-events:auto;font-family:'+T.serif+';background:'+bg+';'); document.body.appendChild(o); return o; } /* [build-05 integrator patch, RE-APPLIED build-06: overlays must outrank the body-level map (z18)] */
   function bigBtn(label){ var b = el('div','min-height:60px;padding:16px 40px;display:flex;align-items:center;justify-content:center;'
     + 'font-size:18px;letter-spacing:1px;color:#1a1408;border-radius:8px;font-family:'+T.serif+';'
     + 'background:linear-gradient(#f0dfa8,#c9a84f);border:1px solid '+T.brassDk+';box-shadow:0 4px 12px rgba(0,0,0,.5);', label);
@@ -413,8 +413,13 @@
   bus.on('player:damaged', function(p){ if (!p||p.__selfTest) return; var a=p.amount||1;
     doFlash(Math.min(.5,.18+a*.02)); popup('-'+a, T.hp); markDirty(); });
   bus.on('combat:damage', function(p){ if (!p||p.__selfTest) return;   // §4 candidate: enemy hit numbers
-    // Combat sends {id, amount, x, z, y?, crit?}; number floats above the enemy.
-    dmgNumber(p.amount||0, p.x, p.z, p.y, p.crit); });
+    /* [build-06 integrator patch] combat.js ships {amount, crit, target,
+     * position:{x,y,z}} (unchanged since Cycle 2), not the flat {x,z,y}
+     * this handler assumed -- so every number fell back to screen-centre
+     * instead of anchoring above the enemy. Accept both shapes. AR-6:
+     * ratify ONE combat:damage payload shape when the event is canonicalized. */
+    var pos = (p.position && p.position.x != null) ? p.position : p;
+    dmgNumber(p.amount||0, pos.x, pos.z, pos.y, p.crit); });
   bus.on('loot:collected', function(p){ if (!p||p.__selfTest) return;
     var it=p.item||'item', n=p.count||1;
     if (it==='gold'){ popup('+'+n+' gold', T.gold); sfx('ui.coin'); }

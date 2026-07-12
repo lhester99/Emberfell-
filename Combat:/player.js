@@ -207,8 +207,14 @@
     var dt = EF.engine.time.dt;
     pstate.x += (wx) * spd * dt;
     pstate.z += (wz) * spd * dt;
-    pstate.x = Math.max(-200, Math.min(200, pstate.x));
-    pstate.z = Math.max(-200, Math.min(200, pstate.z));
+    /* [build-03 integrator patch, playtest bug #1] clamp to the terrain mesh
+     * (EF.worldData.terrain.size), not a hardcoded ±200 — terrainH answers
+     * analytically past the mesh edge, so the old bound let the player walk
+     * onto invisible ground. */
+    var bound = (EF.worldData && EF.worldData.terrain && EF.worldData.terrain.size)
+      ? EF.worldData.terrain.size * 0.5 - 2 : 200;
+    pstate.x = Math.max(-bound, Math.min(bound, pstate.x));
+    pstate.z = Math.max(-bound, Math.min(bound, pstate.z));
     pstate.yaw = Math.atan2(wx / wlen, wz / wlen);
     return run;
   }

@@ -85,6 +85,17 @@
     if (mm > 0) {
       h += mm * m.height * (0.55 + 0.45 * fbm(x * m.freq + 100, z * m.freq - 70, m.octaves, 2.1, 0.5));
     }
+    /* [build-09] canyon: carve an east-west channel; too deep+walled to cross
+     * (buildings.js adds collision along it). Part of the field so the mesh and
+     * the sampler agree. */
+    var cy = T.canyon;
+    if (cy) {
+      var cdz = Math.abs(z - cy.z);
+      if (cdz < cy.halfWidth + cy.rim) {
+        var ct = 1 - smooth(clamp01((cdz - cy.halfWidth) / cy.rim)); // 1 in channel, 0 at rim
+        h -= cy.depth * ct;
+      }
+    }
     return h;
   }
 
@@ -255,18 +266,11 @@
     }
     pushGeom(acc, GEO.cyl, COL.coal, mat(cx, y + 0.07, cz, 1.9, 0.14, 1.9, 0));
 
-    /* three huts ringing the pit */
-    var hutAngles = [0.7, 2.8, 4.9];
-    for (i = 0; i < hutAngles.length; i++) {
-      var ha = hutAngles[i];
-      var hx = cx + Math.cos(ha) * 7.2, hz = cz + Math.sin(ha) * 7.2;
-      pushGeom(acc, GEO.cyl, COL.wall, mat(hx, y + 1.0, hz, 3.4, 2.0, 3.4, 0));
-      pushGeom(acc, GEO.cone, COL.roof, mat(hx, y + 2.75, hz, 4.7, 1.5, 4.7, ha));
-      var da = Math.atan2(cz - hz, cx - hx); // door faces the fire
-      pushGeom(acc, GEO.box, COL.woodDark,
-        mat(hx + Math.cos(da) * 1.66, y + 0.62, hz + Math.sin(da) * 1.66,
-            0.8, 1.24, 0.16, -da + Math.PI / 2, 0, 0));
-    }
+    /* [build-08 integrator: the three solid decorative huts were REMOVED from
+     * here. They are now built as spaced-out, ENTERABLE huts (hollow, door gap,
+     * roof-reveal, interior) in integration/buildings.js alongside the tavern,
+     * blacksmith, and market -- so no village structure is impassable
+     * (requirement 8). The fire pit and well below stay world-owned. */
 
     /* well */
     var wx = cx + 4.6, wz = cz - 4.2;
@@ -276,24 +280,9 @@
     pushGeom(acc, GEO.box, COL.wood, mat(wx + 0.95, y + 1.45, wz, 0.15, 1.5, 0.15, 0));
     pushGeom(acc, GEO.cone, COL.roof, mat(wx, y + 2.5, wz, 2.7, 0.75, 2.7, 0.4));
 
-    /* fence run along the south approach, with a gate gap */
-    function fenceRun(x0, z0, x1, z1) {
-      var dx = x1 - x0, dz = z1 - z0;
-      var len = Math.sqrt(dx * dx + dz * dz);
-      var n = Math.max(2, Math.round(len / 1.5));
-      var yaw = Math.atan2(dx, dz);
-      for (var k = 0; k <= n; k++) {
-        var t = k / n;
-        var px = x0 + dx * t, pz = z0 + dz * t;
-        pushGeom(acc, GEO.box, COL.wood,
-          mat(px, terrainH(px, pz) + 0.55, pz, 0.14, 1.1, 0.14, 0));
-      }
-      var mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
-      pushGeom(acc, GEO.box, COL.wood,
-        mat(mx, terrainH(mx, mz) + 0.88, mz, 0.09, 0.09, len, yaw, 0, 0));
-    }
-    fenceRun(cx - 10.5, cz + 8.5, cx - 2.2, cz + 10.5);
-    fenceRun(cx + 2.2, cz + 10.5, cx + 10.5, cz + 8.5);
+    /* [build-08 integrator: the south-approach fence was REMOVED -- it cut
+     * across the now much wider settlement (requirement 7, ~60-unit village).
+     * Fire pit + well remain; all buildings are placed by buildings.js. */
   }
 
   function buildTower(acc) {
@@ -487,7 +476,7 @@
   /* ===================== 6. SKY / DAY-NIGHT ============================ */
 
   var SKY_R = 100;
-  var dayLength = 240; // seconds per full day
+  var dayLength = 600; // [build-09] 10-minute full day/night cycle
   var sky = null, skyGeo = null, skyMix = null;
   var sunMesh = null, moonMesh = null, stars = null, starMat = null;
   var dirLight = null, hemiLight = null;
@@ -581,10 +570,12 @@
   }
 
   world.getTimePhase = function () {
+    /* [build-09] cycle=600s. dawn 0.20-0.35 (~90s), day 0.35-0.62 (~162s),
+     * dusk 0.62-0.77 (~90s), night 0.77-0.20 (~258s > day). Lamps read this. */
     var t = world.time01;
-    if (t >= 0.22 && t < 0.32) return 'dawn';
-    if (t >= 0.32 && t < 0.70) return 'day';
-    if (t >= 0.70 && t < 0.80) return 'dusk';
+    if (t >= 0.20 && t < 0.35) return 'dawn';
+    if (t >= 0.35 && t < 0.62) return 'day';
+    if (t >= 0.62 && t < 0.77) return 'dusk';
     return 'night';
   };
   world.setTime01 = function (t) { world.time01 = ((t % 1) + 1) % 1; };
@@ -614,8 +605,8 @@
     /* fog + clear color sync */
     if (scene.fog) {
       scene.fog.color.copy(curFog);
-      scene.fog.near = lerp(14, 18, dayF);
-      scene.fog.far = lerp(46, 60, dayF);   // documented deviation, see notes
+      scene.fog.near = lerp(20, 28, dayF);          // [build-09] scaled for +/-200
+      scene.fog.far = lerp(78, 108, dayF);  // hides the terrain edge (<camera far 120)
     }
     if (scene.background && scene.background.isColor) scene.background.copy(curFog);
 
@@ -676,6 +667,14 @@
   }
 
   function updateWaterFire(elapsed) {
+    if (canyonWater && canyonBase) {
+      var cp = canyonWater.geometry.attributes.position, ca = cp.array;
+      for (var ci = 0; ci < cp.count; ci++) {
+        var bx = canyonBase[ci * 3];
+        ca[ci * 3 + 1] = Math.sin(elapsed * 1.3 + bx * 0.5) * 0.05;
+      }
+      cp.needsUpdate = true;
+    }
     if (water) {
       var pos = water.geometry.attributes.position;
       var arr = pos.array;
@@ -810,6 +809,48 @@
     occApplied = rig.distance;
   }
 
+  /* ===================== 8c. MOUNTAIN RANGE + CANYON [build-09] ========= */
+  /* Snow-capped peaks along the north edge: 8 peaks x (rock cone + snow cone)
+   * all MERGED into ONE mesh (draw-call budget). */
+  function buildMountains(scene) {
+    var acc = beginMerge();
+    var rock = 0x6c6e77, snow = 0xeaf0f7;
+    var peaks = [
+      [-165, -184, 40, 44], [-118, -190, 52, 56], [-72, -195, 64, 62],
+      [-22, -189, 48, 50], [28, -196, 70, 68], [78, -188, 56, 58],
+      [128, -192, 50, 54], [170, -183, 38, 42]
+    ];
+    var rng = mulberry32(D.seed + 51);
+    for (var i = 0; i < peaks.length; i++) {
+      var px = peaks[i][0], pz = peaks[i][1], h = peaks[i][2], r = peaks[i][3];
+      var by = rawH(px, pz) - 2;
+      var yaw = rng() * Math.PI;
+      pushGeom(acc, GEO.cone, rock, mat(px, by + h / 2, pz, r, h, r, yaw));
+      pushGeom(acc, GEO.cone, snow, mat(px, by + h * 0.80, pz, r * 0.40, h * 0.42, r * 0.40, yaw));
+      // a lower shoulder so the range reads as connected, not lone cones
+      pushGeom(acc, GEO.cone, rock, mat(px + r * 0.6, by + h * 0.32, pz + 6, r * 0.7, h * 0.6, r * 0.7, yaw + 1));
+    }
+    var mesh = endMerge(acc, 'ef-mountains');
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    world.occluders.push(mesh);
+  }
+
+  /* Water plane filling the carved canyon (the terrain channel is in rawH). */
+  var canyonWater = null, canyonBase = null;
+  function buildCanyonWater(scene) {
+    var cy = T.canyon; if (!cy) return;
+    var geo = new THREE.PlaneGeometry(T.size - 8, cy.halfWidth * 2, 60, 2);
+    geo.rotateX(-Math.PI / 2);
+    canyonWater = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      color: 0x2a4a6e, transparent: true, opacity: 0.85
+    }));
+    canyonWater.position.set(0, cy.waterY, cy.z);
+    canyonWater.name = 'ef-canyon-water';
+    canyonBase = new Float32Array(geo.attributes.position.array);
+    scene.add(canyonWater);
+  }
+
   /* ===================== 9. BOOT + TICK ================================ */
 
   EF.bus.on('game:booted', function (p) {
@@ -835,6 +876,8 @@
 
     buildWater(scene);
     buildFlame(scene);
+    buildMountains(scene);   // [build-09] north range (merged)
+    buildCanyonWater(scene); // [build-09] canyon river
     buildScatter(scene);
 
     world.ready = true;

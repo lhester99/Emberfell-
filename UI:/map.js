@@ -27,9 +27,11 @@
             serif:"Georgia,'Iowan Old Style',serif" };
 
   /* ---- data queries with fallbacks ------------------------------------- */
+  /* [build-05 integrator patch, RE-APPLIED build-06 -- dropped by Cycle 4
+   * re-upload] terrain.size is the FULL extent; return the HALF-extent. */
   function worldSize(){
     var s = EF.worldData && EF.worldData.terrain && EF.worldData.terrain.size;
-    return (typeof s === 'number' && s > 0) ? s : 200;
+    return (typeof s === 'number' && s > 0) ? s / 2 : 100;
   }
   function sampler(){
     if (eng && typeof eng.groundAt === 'function') return eng.groundAt;
@@ -48,6 +50,9 @@
     shrine:{ g:'✚', c:'#7ea0c0' }, _def:{ g:'•', c:'#b08a4a' }
   };
   function poiStyle(t){ return POI_STYLE[t] || POI_STYLE._def; }
+  /* [build-05 integrator patch, RE-APPLIED build-06] world pois carry {id,label} */
+  function poiType(p){ return p.type || p.id; }
+  function poiName(p){ return p.name || p.label; }
 
   /* =======================================================================
    * 1. OFFSCREEN RELIEF  — built once from the height field
@@ -171,14 +176,14 @@
   }
   function drawPOIs(g, W, Hh, scale){
     pois().forEach(function(p){
-      var c = w2c(p.x, p.z, W, Hh), st = poiStyle(p.type);
+      var c = w2c(p.x, p.z, W, Hh), st = poiStyle(poiType(p));
       g.beginPath(); g.arc(c.x, c.y, 4*scale+1, 0, 6.29);
       g.fillStyle = st.c; g.strokeStyle='rgba(20,14,6,.8)'; g.lineWidth=1; g.fill(); g.stroke();
       if (scale >= 1){
         g.font = (11)+'px '+T.serif; g.fillStyle='rgba(30,20,8,.9)'; g.textAlign='center';
         g.fillText(st.g, c.x, c.y+4);
-        if (p.name){ g.fillStyle='rgba(35,24,10,.85)'; g.font='11px '+T.serif;
-          g.fillText(p.name, c.x, c.y+18); }
+        if (poiName(p)){ g.fillStyle='rgba(35,24,10,.85)'; g.font='11px '+T.serif;
+          g.fillText(poiName(p), c.x, c.y+18); }
       }
     });
   }
@@ -244,7 +249,7 @@
     g.beginPath(); g.arc(W/2, Hh/2, W/2, 0, 6.29); g.clip();
     g.imageSmoothingEnabled = true; g.drawImage(OFF, 0, 0, W, Hh);
     // POIs (dots only) + quest + player
-    pois().forEach(function(p){ var c = w2c(p.x,p.z,W,Hh), st = poiStyle(p.type);
+    pois().forEach(function(p){ var c = w2c(p.x,p.z,W,Hh), st = poiStyle(poiType(p));
       g.beginPath(); g.arc(c.x,c.y, W*0.03, 0, 6.29); g.fillStyle=st.c; g.fill(); });
     if (marker){ var m = w2c(marker.x, marker.z, W, Hh);
       g.beginPath(); g.arc(m.x, m.y, W*0.05, 0, 6.29); g.fillStyle='#c0362f'; g.strokeStyle='#ffe6a0'; g.lineWidth=2; g.fill(); g.stroke(); }
@@ -280,7 +285,9 @@
   /* =======================================================================
    * 7. shared DOM helpers (self-contained; no dependency on ui.js internals)
    * ===================================================================== */
-  function el(tag, css){ var e = document.createElement(tag); if (css) e.style.cssText = css; return e; }
+  /* [build-05 integrator patch, RE-APPLIED build-06] call sites pass a third
+   * TEXT arg (MAP title, close glyph); dropping it left the map unclosable. */
+  function el(tag, css, txt){ var e = document.createElement(tag); if (css) e.style.cssText = css; if (txt != null) e.textContent = txt; return e; }
   function tapEl(e, fn){
     e.addEventListener('touchstart', function(ev){ ev.preventDefault(); ev.stopPropagation(); fn(ev); }, { passive:false });
     e.addEventListener('click', function(ev){ fn(ev); });

@@ -35,6 +35,9 @@ const THREE={
     this.lerp=s;this.lerpColors=s;this.multiplyScalar=s;this.offsetHSL=s;this.getHex=()=>0;
     this.getHSL=(o)=>{o=o||{};o.h=0;o.s=0;o.l=0;return o;};this.convertSRGBToLinear=s;},
   MeshLambertMaterial:function(o){this.o=o;},MeshBasicMaterial:function(o){this.o=o;},PointsMaterial:function(o){this.o=o;},
+  /* [build-06 integrator fix] Cycle 4 world.js adds camera occlusion via
+     THREE.Raycaster at module scope; stub it so the file loads. */
+  Raycaster:function(){this.far=Infinity;this.set=()=>{};this.intersectObject=()=>[];this.intersectObjects=()=>[];},
   Vector3:Vec3,Quaternion:function(){this.setFromEuler=()=>this;},Euler:function(){this.set=()=>this;},
   Matrix3:function(){this.getNormalMatrix=()=>this;},Matrix4:function(){this.compose=()=>this;},
   Float32BufferAttribute:function(a){this.array=a;},BackSide:2,DoubleSide:2,FrontSide:0
@@ -45,7 +48,8 @@ const log=[];
 const bus=(function(){const m={};function on(e,f){(m[e]||(m[e]=[])).push(f);return()=>{const a=m[e],i=a.indexOf(f);if(i>=0)a.splice(i,1);};}
   function once(e,f){const o=on(e,p=>{o();f(p);});return o;}function off(){}function emit(e,p){log.push({ev:e,payload:p});const a=m[e];if(a)for(const f of a.slice())try{f(p);}catch(x){console.error('H',e,x);}return 0;}return{on,once,off,emit};})();
 let sampler=()=>0;
-const engine={scene:new Obj3D(),renderer:{},camera:{object:new Obj3D()},
+/* [build-06 integrator fix] occlusion polish reads rig fields + setDistance */
+const engine={scene:new Obj3D(),renderer:{},camera:{object:new Obj3D(),distance:6.5,pitch:0.45,yaw:0,headOffset:1.4,setDistance(){}},
   setGroundSampler:(fn)=>{sampler=fn;},groundAt:(x,z)=>sampler(x,z),
   audio:{register(){},play(){}},input:{buttons:{wasPressed:()=>false},bindKey(){}},time:{elapsed:0,dt:0,frame:0}};
 
